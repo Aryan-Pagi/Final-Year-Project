@@ -9,6 +9,7 @@ import sys
 import pickle
 import numpy as np
 import time
+import re
 from collections import deque
 
 # Force UTF-8 console output on Windows to prevent Unicode print errors
@@ -23,6 +24,106 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_engineered_features
 from utils.word_builder import WordBuilder, is_word_label
+
+
+def _dedupe_consecutive_words(text):
+    """Remove consecutive duplicate words: 'YOU YOU HELP' -> 'YOU HELP'."""
+    words = text.split()
+    if not words:
+        return ""
+    deduped = [words[0]]
+    for word in words[1:]:
+        if word.lower() != deduped[-1].lower():
+            deduped.append(word)
+    return " ".join(deduped)
+
+
+def _rewrite_common_phrases(text):
+    """Apply lightweight grammar rewrites for common sign-to-text patterns."""
+    words = text.split()
+    if not words:
+        return ""
+
+    # Longer patterns first to avoid partial replacement conflicts.
+    rules = [
+        (("thank", "you", "you", "welcome"), ["thank", "you", "you", "are", "welcome"]),
+        (("hello", "how", "you"), ["hello", "how", "are", "you"]),
+        (("what", "your", "name"), ["what", "is", "your", "name"]),
+        (("what", "you", "name"), ["what", "is", "your", "name"]),
+        (("my", "name"), ["my", "name", "is"]),
+        (("how", "you", "doing"), ["how", "are", "you"]),
+        (("you", "welcome"), ["you", "are", "welcome"]),
+        (("please", "help"), ["please", "help", "me"]),
+        (("where", "bathroom"), ["where", "is", "the", "bathroom"]),
+        (("what", "time"), ["what", "time", "is", "it"]),
+        (("i", "am", "help"), ["i", "need", "help"]),
+        (("i", "help"), ["i", "need", "help"]),
+        (("how", "you"), ["how", "are", "you"]),
+        (("i", "sorry"), ["i", "am", "sorry"]),
+        (("i", "thank", "you"), ["thank", "you"]),
+    ]
+
+    i = 0
+    out = []
+    lowered = [w.lower() for w in words]
+    while i < len(words):
+        matched = False
+        for pattern, replacement in rules:
+            n = len(pattern)
+            if i + n <= len(words) and tuple(lowered[i:i + n]) == pattern:
+                out.extend(replacement)
+                i += n
+                matched = True
+                break
+        if not matched:
+            out.append(words[i])
+            i += 1
+
+    return " ".join(out)
+
+
+def _normalize_pronoun_i(text):
+    """Ensure standalone pronoun 'i' is capitalized."""
+    return re.sub(r"\bi\b", "I", text)
+
+
+def normalize_sentence_text(text, add_terminal_punctuation=False):
+    """Light cleanup for recognized text before display/printing."""
+    if not text:
+        return ""
+
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = _dedupe_consecutive_words(cleaned)
+    cleaned = _rewrite_common_phrases(cleaned)
+    cleaned = _dedupe_consecutive_words(cleaned)
+    cleaned = _normalize_pronoun_i(cleaned)
+
+    lower_cleaned = cleaned.lower()
+    formatted_sentences = {
+        "hello how are you": "Hello, how are you?",
+        "how are you": "How are you?",
+        "what is your name": "What is your name?",
+        "my name is": "My name is.",
+        "i need help": "I need help.",
+        "please help me": "Please help me.",
+        "thank you": "Thank you.",
+        "you are welcome": "You are welcome.",
+        "i am sorry": "I am sorry.",
+        "where is the bathroom": "Where is the bathroom?",
+        "what time is it": "What time is it?",
+        "stop": "Stop.",
+        "wait": "Wait.",
+    }
+    if lower_cleaned in formatted_sentences:
+        return formatted_sentences[lower_cleaned]
+
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+
+    if add_terminal_punctuation and cleaned and cleaned[-1] not in ".!?":
+        cleaned += "."
+
+    return cleaned
 
 
 def load_model(model_path='models/gesture_model.pkl'):
@@ -139,8 +240,8 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     detector = HandDetector(
         static_image_mode=False,
         max_num_hands=2,  # Support up to 2 hands
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.7
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
     
     # For FPS calculation
@@ -362,8 +463,8 @@ def predict_words(model_path='models/gesture_model.pkl',
     detector = HandDetector(
         static_image_mode=False,
         max_num_hands=2,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.7
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -533,7 +634,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
                      use_normalized=True,
                      confidence_threshold=0.7,
                      hold_duration=1.0,
-                     auto_space_after=1.5):
+                     auto_space_after=1.0):
     """
     Real-time sentence formation.
 
@@ -587,7 +688,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
 
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
-        min_detection_confidence=0.7, min_tracking_confidence=0.7
+        min_detection_confidence=0.5, min_tracking_confidence=0.5
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -709,33 +810,58 @@ def predict_sentence(model_path='models/gesture_model.pkl',
             frame = display_text(frame, f"+ '{confirmed}'",
                                  (10, 130), font_scale=0.9, color=(0, 255, 255), thickness=2)
 
-        # Current word being typed
-        if word_builder.current_word:
-            frame = display_text(frame, f"Word: {word_builder.current_word}",
-                                 (10, h - 120), font_scale=0.7,
-                                 color=(200, 200, 50), thickness=2)
+        # ── Word collection status (top-right area) ──────────────────────────
+        # Show confirmed words count
+        confirmed_words = word_builder.sentence.split() if word_builder.sentence else []
+        word_count = len(confirmed_words)
+        cv2.putText(frame, f"Words: {word_count}", (w - 160, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 150), 2, cv2.LINE_AA)
 
-        # Sentence history (grey, above the sentence panel)
+        # Current word being typed (middle-right)
+        if word_builder.current_word:
+            cv2.rectangle(frame, (w - 220, 60), (w - 10, 100), (50, 100, 50), -1)
+            cv2.rectangle(frame, (w - 220, 60), (w - 10, 100), (100, 255, 100), 2)
+            cv2.putText(frame, "Current:", (w - 210, 78),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1, cv2.LINE_AA)
+            cv2.putText(frame, word_builder.current_word, (w - 210, 98),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 255, 100), 2, cv2.LINE_AA)
+        else:
+            cv2.putText(frame, "Waiting for gesture...", (w - 240, 85),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1, cv2.LINE_AA)
+
+        # Sentence history (grey, above the main sentence panel)
         for i, hist in enumerate(reversed(sentence_history[-2:])):
             max_c = (w - 30) // 11
             trunc = hist[-max_c:] if len(hist) > max_c else hist
             frame = display_text(frame, f"> {trunc}",
-                                 (10, h - 150 - i * 28),
-                                 font_scale=0.52, color=(120, 120, 120), thickness=1)
+                                 (10, h - 180 - i * 32),
+                                 font_scale=0.55, color=(100, 200, 100), thickness=1)
 
-        # Sentence display panel (dark background bar)
-        cv2.rectangle(frame, (0, h - 95), (w, h - 50), (30, 30, 60), -1)
-        full_text = word_builder.get_display_text()
-        if full_text:
+        # ── Main sentence display panel (LARGE, prominent) ────────────────────
+        cv2.rectangle(frame, (0, h - 110), (w, h - 45), (20, 40, 80), -1)
+        cv2.line(frame, (0, h - 110), (w, h - 110), (0, 255, 0), 3)
+        
+        # Label with word count badge
+        cv2.putText(frame, "SENTENCE:", (10, h - 88),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 255, 100), 2, cv2.LINE_AA)
+        
+        # Display confirmed sentence words
+        if word_builder.sentence:
+            sentence_text = normalize_sentence_text(word_builder.sentence)
             max_chars = w // 13
-            shown = full_text[-max_chars:] if len(full_text) > max_chars else full_text
-            frame = display_text(frame, shown,
-                                 (10, h - 57), font_scale=0.9,
-                                 color=(255, 255, 255), thickness=2)
+            shown = sentence_text[-max_chars:] if len(sentence_text) > max_chars else sentence_text
+            cv2.putText(frame, shown, (115, h - 54),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 255, 150), 3, cv2.LINE_AA)
+            # Show indicator that words are being collected
+            cv2.circle(frame, (w - 20, h - 70), 6, (0, 255, 0), -1)
+        elif word_builder.current_word:
+            # Show current word in progress in the sentence panel
+            cv2.putText(frame, word_builder.current_word, (115, h - 54),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (150, 200, 255), 3, cv2.LINE_AA)
         else:
-            frame = display_text(frame, "Start signing...",
-                                 (10, h - 57), font_scale=0.7,
-                                 color=(110, 110, 110), thickness=1)
+            cv2.putText(frame, "Sign to begin...",
+                        (115, h - 54), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (140, 140, 140), 2, cv2.LINE_AA)
 
         # Instructions bar
         frame = display_text(frame,
@@ -759,6 +885,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
             word_builder.add_space()  # commit any in-progress word
             sentence = word_builder.sentence.strip()
             if sentence:
+                sentence = normalize_sentence_text(sentence, add_terminal_punctuation=True)
                 sentence_history.append(sentence)
                 print(f"Sentence: {sentence}")
             word_builder.clear()
@@ -774,7 +901,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     # Commit any unsaved text on exit
     final_text = word_builder.get_display_text().strip()
     if final_text:
-        sentence_history.append(final_text)
+        sentence_history.append(normalize_sentence_text(final_text, add_terminal_punctuation=True))
 
     if sentence_history:
         print("\n" + "="*50)
@@ -868,7 +995,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
 
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
-        min_detection_confidence=0.7, min_tracking_confidence=0.7
+        min_detection_confidence=0.5, min_tracking_confidence=0.5
     )
 
     prev_time = time.time()
@@ -933,7 +1060,8 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
                     sentence.append(most_common_label)
                     flash_word = most_common_label
                     flash_until = now + 1.0
-                    print(f"  + '{most_common_label}'  ->  {' '.join(sentence)}")
+                    live_sentence = normalize_sentence_text(" ".join(sentence))
+                    print(f"  + '{most_common_label}'  ->  {live_sentence}")
                     # ── Step 7: text-to-speech ─────────────────────────────────
                     if tts_engine:
                         try:
@@ -993,7 +1121,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 0), 1, cv2.LINE_AA)
 
         # Sentence text — big, bright white
-        sentence_text = " ".join(sentence) if sentence else "(waiting for signs...)"
+        sentence_text = normalize_sentence_text(" ".join(sentence)) if sentence else "(waiting for signs...)"
         max_chars = (w - 130) // 16
         shown = sentence_text[-max_chars:] if len(sentence_text) > max_chars else sentence_text
         txt_color = (255, 255, 255) if sentence else (160, 160, 160)
@@ -1044,7 +1172,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
 
     # Final output
     if sentence:
-        final = " ".join(sentence)
+        final = normalize_sentence_text(" ".join(sentence), add_terminal_punctuation=True)
         print(f"\nFinal sentence: {final}")
 
     cap.release()
@@ -1055,34 +1183,76 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
 
 def main():
     """
-    Main function to run the real-time prediction script.
+    Main function to run real-time modes directly from this script.
     """
     print("\n" + "="*60)
-    print("ISL Gesture Recognition - Real-time Prediction")
+    print("ISL Gesture Recognition - Real-time Modes")
     print("="*60)
+
+    print("\nChoose mode:")
+    print("  1. Letters prediction")
+    print("  2. Word formation")
+    print("  3. Sentence formation (recommended)")
+    print("  4. Stable sentence builder")
+    mode = input("Enter mode (1-4, default: 3): ").strip() or "3"
     
     # Option to use normalized landmarks
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
-    
-    # Option to set confidence threshold
-    threshold_input = input("Enter confidence threshold (0-1, default: 0.6): ").strip()
+
+    default_threshold = 0.6 if mode == "1" else 0.5
+    threshold_input = input(f"Enter confidence threshold (0-1, default: {default_threshold}): ").strip()
     
     try:
         if threshold_input:
             confidence_threshold = float(threshold_input)
             if confidence_threshold < 0 or confidence_threshold > 1:
-                print("Warning: Threshold must be between 0 and 1. Using default (0.6)")
-                confidence_threshold = 0.6
+                print(f"Warning: Threshold must be between 0 and 1. Using default ({default_threshold})")
+                confidence_threshold = default_threshold
         else:
-            confidence_threshold = 0.6
+            confidence_threshold = default_threshold
     except ValueError:
-        print("Warning: Invalid input. Using default threshold (0.6)")
-        confidence_threshold = 0.6
-    
-    # Start real-time prediction
-    predict_realtime(use_normalized=use_normalized, 
-                    confidence_threshold=confidence_threshold)
+        print(f"Warning: Invalid input. Using default threshold ({default_threshold})")
+        confidence_threshold = default_threshold
+
+    if mode == "1":
+        predict_realtime(use_normalized=use_normalized,
+                         confidence_threshold=confidence_threshold)
+    elif mode == "2":
+        hold_input = input("Enter hold duration in seconds (default: 1.0): ").strip()
+        try:
+            hold_duration = float(hold_input) if hold_input else 1.0
+        except ValueError:
+            hold_duration = 1.0
+        predict_words(use_normalized=use_normalized,
+                      confidence_threshold=confidence_threshold,
+                      hold_duration=hold_duration)
+    elif mode == "3":
+        hold_input = input("Enter hold duration in seconds (default: 1.0): ").strip()
+        try:
+            hold_duration = float(hold_input) if hold_input else 1.0
+        except ValueError:
+            hold_duration = 1.0
+        auto_space_input = input("Auto-space delay when hand removed (default: 1.0): ").strip()
+        try:
+            auto_space_after = float(auto_space_input) if auto_space_input else 1.0
+            if auto_space_after <= 0:
+                auto_space_after = 1.0
+        except ValueError:
+            auto_space_after = 1.0
+        predict_sentence(use_normalized=use_normalized,
+                         confidence_threshold=confidence_threshold,
+                         hold_duration=hold_duration,
+                         auto_space_after=auto_space_after)
+    elif mode == "4":
+        predict_stable_sentence(use_normalized=use_normalized,
+                                confidence_threshold=confidence_threshold)
+    else:
+        print("Invalid mode. Starting Sentence formation by default.")
+        predict_sentence(use_normalized=use_normalized,
+                         confidence_threshold=confidence_threshold,
+                         hold_duration=1.0,
+                         auto_space_after=1.0)
 
 
 if __name__ == "__main__":

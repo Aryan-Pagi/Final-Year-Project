@@ -228,13 +228,13 @@ def sentence_formation_menu():
         print("Warning: Invalid input. Using default hold duration (1.0)")
         hold_duration = 1.0
 
-    auto_space_input = input("Auto-space delay when hand removed in seconds (default: 1.5): ").strip()
+    auto_space_input = input("Auto-space delay when hand removed in seconds (default: 1.0): ").strip()
     try:
-        auto_space_after = float(auto_space_input) if auto_space_input else 1.5
+        auto_space_after = float(auto_space_input) if auto_space_input else 1.0
         if auto_space_after <= 0:
-            auto_space_after = 1.5
+            auto_space_after = 1.0
     except ValueError:
-        auto_space_after = 1.5
+        auto_space_after = 1.0
 
     print("\nStarting sentence formation mode...")
     predict_sentence(use_normalized=use_normalized,
