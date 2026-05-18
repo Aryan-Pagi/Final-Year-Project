@@ -24,6 +24,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_engineered_features
 from utils.word_builder import WordBuilder, is_word_label
+from utils.logger import logger
 
 
 def _dedupe_consecutive_words(text):
@@ -152,10 +153,13 @@ def load_model(model_path='models/gesture_model.pkl'):
         num_features = model_data.get('num_features', None)
         model_type = model_data.get('model_type', 'sklearn')
 
+        index_to_class = model_data.get('index_to_class', list(getattr(label_encoder, 'classes_', [])))
+
         model_meta = {
             'model_type': model_type,
             'max_seq_frames': model_data.get('max_seq_frames', 30),
             'feature_size': model_data.get('feature_size', 93),
+            'index_to_class': index_to_class,
         }
 
         if model_type == 'BiLSTM':
@@ -163,17 +167,17 @@ def load_model(model_path='models/gesture_model.pkl'):
             keras_rel_path = model_data.get('keras_model_path', 'models/bilstm_model.keras')
             keras_full_path = os.path.join(script_dir, keras_rel_path)
             if not os.path.exists(keras_full_path):
-                print(f"Error: Keras model file not found: {keras_full_path}")
+                logger.error(f"Error: Keras model file not found: {keras_full_path}")
                 return None, None, False, None, {}
             model = tf.keras.models.load_model(keras_full_path)
-            print(f"\u2713 BiLSTM model loaded successfully")
+            logger.info("✓ BiLSTM model loaded successfully")
         else:
             model = model_data['model']
-            print(f"\u2713 Model loaded successfully ({model_type})")
+            logger.info(f"✓ Model loaded successfully ({model_type})")
 
-        print(f"  - Classes: {', '.join(label_encoder.classes_)}")
+        logger.info(f"  - Classes: {', '.join(index_to_class)}")
         if isinstance(model_data.get('test_accuracy'), float):
-            print(f"  - Test Accuracy: {model_data['test_accuracy']:.2%}")
+            logger.info(f"  - Test Accuracy: {model_data['test_accuracy']:.2%}")
 
         return model, label_encoder, uses_engineered, num_features, model_meta
 
@@ -278,10 +282,16 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                                color=(255, 255, 0), thickness=2)
         
         # Extract landmarks from first hand for prediction
+        hand_index = 0
         if use_normalized:
-            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=0)
+            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=hand_index)
         else:
-            landmarks = detector.extract_landmarks(results, hand_index=0)
+            landmarks = detector.extract_landmarks(results, hand_index=hand_index)
+
+        # Get handedness label if available
+        handedness = detector.get_handedness(results, hand_index=hand_index)
+        if handedness is None:
+            handedness = "Unknown"
         
         # Predict gesture if hand is detected
         if landmarks is not None:
@@ -297,7 +307,8 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                 proba = model.predict(seq[np.newaxis], verbose=0)[0]
                 pred_idx = int(np.argmax(proba))
                 confidence = float(proba[pred_idx])
-                predicted_label = label_encoder.inverse_transform([pred_idx])[0]
+                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
+                predicted_label = index_to_class[pred_idx]
             elif unified_mode:
                 # Time-based sliding window (mean+std)
                 _now = time.time()
@@ -309,13 +320,23 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                 prediction = model.predict(lm.reshape(1, -1))[0]
                 prediction_proba = model.predict_proba(lm.reshape(1, -1))[0]
                 confidence = prediction_proba[prediction]
-                predicted_label = label_encoder.inverse_transform([prediction])[0]
+                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
+                # prediction may be an integer index
+                try:
+                    predicted_label = index_to_class[int(prediction)]
+                except Exception:
+                    # fallback to label_encoder
+                    predicted_label = label_encoder.inverse_transform([prediction])[0]
             else:
                 landmarks_reshaped = landmarks.reshape(1, -1)
                 prediction = model.predict(landmarks_reshaped)[0]
                 prediction_proba = model.predict_proba(landmarks_reshaped)[0]
                 confidence = prediction_proba[prediction]
-                predicted_label = label_encoder.inverse_transform([prediction])[0]
+                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
+                try:
+                    predicted_label = index_to_class[int(prediction)]
+                except Exception:
+                    predicted_label = label_encoder.inverse_transform([prediction])[0]
 
             # Add to prediction history for smoothing
             prediction_history.append(predicted_label)
@@ -332,26 +353,26 @@ def predict_realtime(model_path='models/gesture_model.pkl',
             # Display prediction
             gesture_type = "Word" if is_word_label(smoothed_prediction) else "Letter"
             if confidence >= confidence_threshold:
-                prediction_text = f"{gesture_type}: {smoothed_prediction}"
+                prediction_text = f"{handedness} {gesture_type}: {smoothed_prediction}"
                 confidence_text = f"Confidence: {confidence:.2%}"
-                
+
                 # Display with high confidence color
-                frame = display_text(frame, prediction_text, 
-                                   position=(10, 30), font_scale=1.2, 
+                frame = display_text(frame, prediction_text,
+                                   position=(10, 30), font_scale=1.2,
                                    color=(0, 255, 0), thickness=2)
-                frame = display_text(frame, confidence_text, 
-                                   position=(10, 70), font_scale=0.7, 
+                frame = display_text(frame, confidence_text,
+                                   position=(10, 70), font_scale=0.7,
                                    color=(0, 255, 0), thickness=2)
             else:
                 # Low confidence
-                prediction_text = f"{gesture_type}: {smoothed_prediction} (?)"
+                prediction_text = f"{handedness} {gesture_type}: {smoothed_prediction} (?)"
                 confidence_text = f"Confidence: {confidence:.2%} (Low)"
-                
-                frame = display_text(frame, prediction_text, 
-                                   position=(10, 30), font_scale=1.2, 
+
+                frame = display_text(frame, prediction_text,
+                                   position=(10, 30), font_scale=1.2,
                                    color=(0, 165, 255), thickness=2)
-                frame = display_text(frame, confidence_text, 
-                                   position=(10, 70), font_scale=0.7, 
+                frame = display_text(frame, confidence_text,
+                                   position=(10, 70), font_scale=0.7,
                                    color=(0, 165, 255), thickness=2)
         else:
             # No hand detected

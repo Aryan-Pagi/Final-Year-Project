@@ -1,5 +1,7 @@
 # ISL Gesture Recognition System
 
+Note: README updated to reflect BiLSTM training pipeline and current filenames.
+
 A real-time **Indian Sign Language (ISL)** gesture recognition system using computer vision and machine learning. This system can recognize hand gestures from a webcam and classify them into characters (A–Z and 0–9), with support for training custom gestures.
 
 ## 🎯 Features
@@ -322,6 +324,7 @@ detector = HandDetector(
 - [ ] Mobile app deployment
 - [ ] Multi-language support
 - [ ] Gesture recording and playback
+- [ ] Integration with text-to-speech
 - [ ] Integration with text-to-speech
 
 ## 📄 License

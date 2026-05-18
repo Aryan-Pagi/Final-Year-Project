@@ -21,6 +21,8 @@ from tensorflow.keras.optimizers import Adam
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils.logger import logger
+
 MAX_SEQ_FRAMES = 30
 
 
@@ -210,10 +212,16 @@ def train_model(sequences_npz='dataset/sequences.npz',
 
     os.makedirs(os.path.dirname(full_model_path), exist_ok=True)
 
+    # Create explicit class index mappings to ensure consistent ordering
+    index_to_class = list(label_encoder.classes_)
+    class_to_index = {c: i for i, c in enumerate(index_to_class)}
+
     model_data = {
         'model_type': 'BiLSTM',
         'keras_model_path': 'models/bilstm_model.keras',
         'label_encoder': label_encoder,
+        'index_to_class': index_to_class,
+        'class_to_index': class_to_index,
         'max_seq_frames': int(seq_len),
         'feature_size': int(feat_size),
         'num_features': int(feat_size),    # kept for backward-compat detection
@@ -225,8 +233,8 @@ def train_model(sequences_npz='dataset/sequences.npz',
     with open(full_model_path, 'wb') as f:
         pickle.dump(model_data, f)
 
-    print(f"✓ Keras model saved to : {full_keras_path}")
-    print(f"✓ Metadata saved to    : {full_model_path}")
+    logger.info(f"✓ Keras model saved to : {full_keras_path}")
+    logger.info(f"✓ Metadata saved to    : {full_model_path}")
     print(f"✓ Model includes:")
     print(f"  - Bidirectional LSTM (2 layers)")
     print(f"  - Label encoder ({num_classes} classes)")

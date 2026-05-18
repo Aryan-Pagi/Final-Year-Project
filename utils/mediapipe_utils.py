@@ -124,6 +124,21 @@ class HandDetector:
         if results.multi_hand_landmarks:
             return len(results.multi_hand_landmarks)
         return 0
+
+    def get_handedness(self, results, hand_index=0):
+        """
+        Return the handedness label ('Left' or 'Right') for the specified hand index.
+        Falls back to None if not available.
+        """
+        try:
+            if results.multi_handedness and len(results.multi_handedness) > hand_index:
+                classification = results.multi_handedness[hand_index].classification
+                if classification:
+                    # classification is a list; return the label of first entry
+                    return classification[0].label
+        except Exception:
+            pass
+        return None
     
     def extract_landmarks_normalized(self, results, frame_shape, hand_index=0):
         """

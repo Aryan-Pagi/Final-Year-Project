@@ -40,6 +40,7 @@ class WordBuilder:
         self._stable_label = None
         self._stable_since = None
         self._last_confirm_time = 0.0
+        self._last_confirmed_label = None
 
     # ── public API ──────────────────────────────────────────────
 
@@ -64,8 +65,11 @@ class WordBuilder:
         if (self._stable_since is not None
                 and (now - self._stable_since) >= self.hold_duration
                 and (now - self._last_confirm_time) >= self.cooldown):
+            if dominant == self._last_confirmed_label:
+                return None
             self._confirm(dominant)
             self._last_confirm_time = now
+            self._last_confirmed_label = dominant
             self._stable_since = now
             return dominant
 
@@ -150,3 +154,4 @@ class WordBuilder:
         self._history.clear()
         self._stable_label = None
         self._stable_since = None
+        self._last_confirmed_label = None
