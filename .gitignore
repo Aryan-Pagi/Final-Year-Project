@@ -40,3 +40,6 @@ models/*.pkl
 
 # Temporary files
 *.tmp
+
+dataset/
+models/
