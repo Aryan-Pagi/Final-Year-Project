@@ -131,7 +131,9 @@ def _static_to_sequence(detector, image, use_normalized):
 
 def extract_landmarks_from_dataset(dataset_path='dataset/raw_images', 
                                    output_csv='dataset/landmarks.csv',
-                                   use_normalized=True):
+                                   use_normalized=True,
+                                   target_labels=None,
+                                   max_samples_per_label=None):
     """
     Extract hand landmarks from all images in the dataset.
     
@@ -139,6 +141,8 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
         dataset_path (str): Path to the raw images directory
         output_csv (str): Path to save the landmarks CSV file
         use_normalized (bool): Whether to use normalized landmarks
+        target_labels (list): Optional list of labels to include
+        max_samples_per_label (int): Optional cap on samples per gesture
     """
     # Get absolute paths
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -165,6 +169,9 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
     label_dirs = [d for d in os.listdir(full_dataset_path)
                   if os.path.isdir(os.path.join(full_dataset_path, d))]
 
+    if target_labels:
+        label_dirs = [d for d in label_dirs if d in target_labels]
+
     if not label_dirs:
         print(f"Error: No label directories found in {full_dataset_path}")
         print("Please collect data first using collect_data.py")
@@ -181,6 +188,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
     total_processed = 0
     total_skipped = 0
     failed_images = []
+    label_sample_counts = {}
 
     # Process each label directory
     for label in sorted(label_dirs):
@@ -193,6 +201,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
         )
         image_files = [f for f in os.listdir(label_path)
                        if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        label_sample_counts[label] = 0
 
         if clip_dirs:
             # ── Video-sequence label ──────────────────────────────────
@@ -203,7 +212,10 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
                 if feat is not None:
                     all_landmarks.append(feat)
                     all_labels.append(label)
+                    label_sample_counts[label] += 1
                     total_processed += 1
+                    if max_samples_per_label and label_sample_counts[label] >= max_samples_per_label:
+                        break # Stop processing clips for this label
                 else:
                     total_skipped += 1
                     failed_images.append(f"{label}/{clip_name}")
@@ -222,7 +234,10 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
                 if feat is not None:
                     all_landmarks.append(feat)
                     all_labels.append(label)
+                    label_sample_counts[label] += 1
                     total_processed += 1
+                    if max_samples_per_label and label_sample_counts[label] >= max_samples_per_label:
+                        break # Stop processing images for this label
                 else:
                     total_skipped += 1
                     failed_images.append(f"{label}/{img_file}")
@@ -295,7 +310,9 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
 
 def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
                                    output_npz='dataset/sequences.npz',
-                                   use_normalized=True):
+                                   use_normalized=True,
+                                   target_labels=None,
+                                   max_samples_per_label=None):
     """
     Extract per-frame landmark sequences from all clips/images and save as a
     compressed .npz file for Bidirectional LSTM training.
@@ -325,6 +342,9 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
     label_dirs = [d for d in os.listdir(full_dataset_path)
                   if os.path.isdir(os.path.join(full_dataset_path, d))]
 
+    if target_labels:
+        label_dirs = [d for d in label_dirs if d in target_labels]
+
     if not label_dirs:
         print(f"Error: No label directories found in {full_dataset_path}")
         return
@@ -339,6 +359,7 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
 
     total_processed = 0
     total_skipped = 0
+    label_sample_counts = {}
 
     for label in sorted(label_dirs):
         label_path = os.path.join(full_dataset_path, label)
@@ -349,6 +370,7 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
         )
         image_files = [f for f in os.listdir(label_path)
                        if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        label_sample_counts[label] = 0
 
         if clip_dirs:
             print(f"Processing '{label}': {len(clip_dirs)} video clips")
@@ -358,7 +380,10 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
                 if seq is not None:
                     all_sequences.append(seq)
                     all_labels.append(label)
+                    label_sample_counts[label] += 1
                     total_processed += 1
+                    if max_samples_per_label and label_sample_counts[label] >= max_samples_per_label:
+                        break
                 else:
                     total_skipped += 1
 
@@ -374,7 +399,10 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
                 if seq is not None:
                     all_sequences.append(seq)
                     all_labels.append(label)
+                    label_sample_counts[label] += 1
                     total_processed += 1
+                    if max_samples_per_label and label_sample_counts[label] >= max_samples_per_label:
+                        break # Stop processing clips for this label
                 else:
                     total_skipped += 1
         else:
@@ -420,6 +448,23 @@ def main():
     print("  2) Flat CSV        — for Random Forest / legacy models")
     mode_choice = input("Choose mode (1/2, default 1): ").strip()
 
+    print("\nLabel Scope:")
+    print("  1) All labels in dataset")
+    print("  2) Digits only (0-9)")
+    scope_choice = input("Choose scope (1/2, default 2): ").strip() or "2"
+    target_labels = [str(i) for i in range(10)] if scope_choice == "2" else None
+
+    max_samples_input = input("Cap samples per label (e.g., 100, or leave blank for no cap): ").strip()
+    max_samples_per_label = None
+    if max_samples_input:
+        try:
+            max_samples_per_label = int(max_samples_input)
+            if max_samples_per_label <= 0:
+                print("Warning: Max samples must be positive. No cap applied.")
+                max_samples_per_label = None
+        except ValueError:
+            print("Warning: Invalid input for max samples. No cap applied.")
+
     normalize_choice = input("Use normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
 
@@ -429,9 +474,9 @@ def main():
         print("Using raw landmarks")
 
     if mode_choice == '2':
-        extract_landmarks_from_dataset(use_normalized=use_normalized)
+        extract_landmarks_from_dataset(use_normalized=use_normalized, target_labels=target_labels, max_samples_per_label=max_samples_per_label)
     else:
-        extract_sequences_from_dataset(use_normalized=use_normalized)
+        extract_sequences_from_dataset(use_normalized=use_normalized, target_labels=target_labels, max_samples_per_label=max_samples_per_label)
 
 
 if __name__ == "__main__":

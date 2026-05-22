@@ -184,7 +184,11 @@ def load_model(model_path='models/gesture_model.pkl'):
 
 def predict_realtime(model_path='models/gesture_model.pkl', 
                     use_normalized=True,
-                    confidence_threshold=0.7):
+                    confidence_threshold=0.7,
+                    stop_event=None,
+                    display=True,
+                    frame_callback=None,
+                    results_callback=None):
     """
     Run real-time gesture prediction using webcam.
     
@@ -192,6 +196,9 @@ def predict_realtime(model_path='models/gesture_model.pkl',
         model_path (str): Path to the trained model
         use_normalized (bool): Whether to use normalized landmarks
         confidence_threshold (float): Minimum confidence for displaying prediction
+        stop_event (threading.Event|None): External stop signal
+        display (bool): Show OpenCV window if True
+        frame_callback (callable|None): Called with each rendered frame
     """
     # Load the model
     print(f"\n{'='*60}")
@@ -255,6 +262,9 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print("Webcam started. Showing predictions...\n")
     
     while True:
+        if stop_event is not None and stop_event.is_set():
+            print("\nStop requested. Exiting real-time prediction...")
+            break
         ret, frame = cap.read()
         
         if not ret:
@@ -329,6 +339,10 @@ def predict_realtime(model_path='models/gesture_model.pkl',
             else:
                 smoothed_prediction = predicted_label
             
+            # Call results callback to send prediction back to caller
+            if results_callback is not None:
+                results_callback(smoothed_prediction, confidence)
+            
             # Display prediction
             gesture_type = "Word" if is_word_label(smoothed_prediction) else "Letter"
             if confidence >= confidence_threshold:
@@ -377,21 +391,26 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                            position=(10, frame.shape[0] - 10), font_scale=0.5, 
                            color=(255, 255, 255), thickness=1)
         
-        # Show the frame
-        cv2.imshow('ISL Gesture Recognition', frame)
-        
-        # Wait for key press
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            print("\nStopping real-time prediction...")
-            break
-        elif key == ord('f'):
-            show_fps = not show_fps
+        if frame_callback is not None:
+            frame_callback(frame)
+
+        if display:
+            # Show the frame
+            cv2.imshow('ISL Gesture Recognition', frame)
+            
+            # Wait for key press
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                print("\nStopping real-time prediction...")
+                break
+            elif key == ord('f'):
+                show_fps = not show_fps
     
     # Release resources
     cap.release()
-    cv2.destroyAllWindows()
+    if display:
+        cv2.destroyAllWindows()
     detector.close()
     
     print("✓ Real-time prediction stopped\n")
@@ -400,7 +419,11 @@ def predict_realtime(model_path='models/gesture_model.pkl',
 def predict_words(model_path='models/gesture_model.pkl',
                   use_normalized=True,
                   confidence_threshold=0.7,
-                  hold_duration=1.0):
+                  hold_duration=1.0,
+                  stop_event=None,
+                  display=True,
+                  frame_callback=None,
+                  results_callback=None):
     """
     Run real-time word formation from individual letter gestures.
 
@@ -412,6 +435,9 @@ def predict_words(model_path='models/gesture_model.pkl',
         use_normalized (bool): Whether to use normalized landmarks
         confidence_threshold (float): Minimum confidence for accepting a prediction
         hold_duration (float): Seconds to hold a letter before it is confirmed
+        stop_event (threading.Event|None): External stop signal
+        display (bool): Show OpenCV window if True
+        frame_callback (callable|None): Called with each rendered frame
     """
     # Load the model
     print(f"\n{'='*60}")
@@ -473,6 +499,9 @@ def predict_words(model_path='models/gesture_model.pkl',
     print("Webcam started. Form words by holding gestures...\n")
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            print("\nStop requested. Exiting word formation mode...")
+            break
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to capture frame.")
@@ -526,6 +555,9 @@ def predict_words(model_path='models/gesture_model.pkl',
         confirmed = None
         if predicted_label is not None and confidence >= confidence_threshold:
             confirmed = word_builder.update(predicted_label)
+            # Call results callback when a letter is confirmed
+            if confirmed is not None and results_callback is not None:
+                results_callback(confirmed, confidence)
         else:
             # No confident prediction — reset hold tracking
             word_builder._reset_tracking()
@@ -606,18 +638,22 @@ def predict_words(model_path='models/gesture_model.pkl',
                            position=(w - 110, 30), font_scale=0.6,
                            color=(255, 255, 0), thickness=1)
 
-        cv2.imshow('ISL Word Formation', frame)
+        if frame_callback is not None:
+            frame_callback(frame)
 
-        # Key handling
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord(' '):
-            word_builder.add_space()
-        elif key == 8:  # Backspace
-            word_builder.backspace()
-        elif key == ord('c'):
-            word_builder.clear()
+        if display:
+            cv2.imshow('ISL Word Formation', frame)
+
+            # Key handling
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord(' '):
+                word_builder.add_space()
+            elif key == 8:  # Backspace
+                word_builder.backspace()
+            elif key == ord('c'):
+                word_builder.clear()
 
     # Print final text
     final_text = word_builder.get_display_text()
@@ -625,7 +661,8 @@ def predict_words(model_path='models/gesture_model.pkl',
         print(f"\nFormed text: {final_text}")
 
     cap.release()
-    cv2.destroyAllWindows()
+    if display:
+        cv2.destroyAllWindows()
     detector.close()
     print("✓ Word formation mode stopped\n")
 
@@ -634,7 +671,11 @@ def predict_sentence(model_path='models/gesture_model.pkl',
                      use_normalized=True,
                      confidence_threshold=0.7,
                      hold_duration=1.0,
-                     auto_space_after=1.0):
+                     auto_space_after=1.0,
+                     stop_event=None,
+                     display=True,
+                     frame_callback=None,
+                     results_callback=None):
     """
     Real-time sentence formation.
 
@@ -646,6 +687,9 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     - Press BACKSPACE: delete last character.
     - Press 'c'    : clear current sentence.
     - Press 'q'    : quit.
+    - Stop event  : external stop signal from UI.
+    - display     : show OpenCV window when True.
+    - frame_callback: called with each rendered frame.
     """
     print(f"\n{'='*60}")
     print("Loading Model...")
@@ -699,6 +743,9 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("Webcam started. Begin signing...\n")
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            print("\nStop requested. Exiting sentence formation mode...")
+            break
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to capture frame.")
@@ -766,6 +813,9 @@ def predict_sentence(model_path='models/gesture_model.pkl',
         confirmed = None
         if predicted_label is not None and confidence >= confidence_threshold:
             confirmed = word_builder.update(predicted_label)
+            # Call results callback when a letter is confirmed
+            if confirmed is not None and results_callback is not None:
+                results_callback(confirmed, confidence)
         elif predicted_label is not None:
             word_builder._reset_tracking()
 
@@ -876,27 +926,31 @@ def predict_sentence(model_path='models/gesture_model.pkl',
         frame = display_text(frame, f"FPS:{int(fps)}",
                              (w - 90, 30), font_scale=0.55, color=(255, 255, 0), thickness=1)
 
-        cv2.imshow('ISL Sentence Formation', frame)
+        if frame_callback is not None:
+            frame_callback(frame)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == 13:  # Enter — finalise current sentence
-            word_builder.add_space()  # commit any in-progress word
-            sentence = word_builder.sentence.strip()
-            if sentence:
-                sentence = normalize_sentence_text(sentence, add_terminal_punctuation=True)
-                sentence_history.append(sentence)
-                print(f"Sentence: {sentence}")
-            word_builder.clear()
-            feat_window.clear()
-        elif key == ord(' '):
-            word_builder.add_space()
-        elif key == 8:  # Backspace
-            word_builder.backspace()
-        elif key == ord('c'):
-            word_builder.clear()
-            feat_window.clear()
+        if display:
+            cv2.imshow('ISL Sentence Formation', frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == 13:  # Enter — finalise current sentence
+                word_builder.add_space()  # commit any in-progress word
+                sentence = word_builder.sentence.strip()
+                if sentence:
+                    sentence = normalize_sentence_text(sentence, add_terminal_punctuation=True)
+                    sentence_history.append(sentence)
+                    print(f"Sentence: {sentence}")
+                word_builder.clear()
+                feat_window.clear()
+            elif key == ord(' '):
+                word_builder.add_space()
+            elif key == 8:  # Backspace
+                word_builder.backspace()
+            elif key == ord('c'):
+                word_builder.clear()
+                feat_window.clear()
 
     # Commit any unsaved text on exit
     final_text = word_builder.get_display_text().strip()
@@ -911,7 +965,8 @@ def predict_sentence(model_path='models/gesture_model.pkl',
         print("="*50)
 
     cap.release()
-    cv2.destroyAllWindows()
+    if display:
+        cv2.destroyAllWindows()
     detector.close()
     print("\u2713 Sentence formation mode stopped\n")
 
@@ -921,7 +976,11 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
                              confidence_threshold=0.5,
                              buffer_size=10,
                              stability_threshold=6,
-                             use_tts=True):
+                             use_tts=True,
+                             stop_event=None,
+                             display=True,
+                             frame_callback=None,
+                             results_callback=None):
     """
     Real-time sentence builder using a prediction buffer for stability.
 
@@ -1002,6 +1061,9 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     print("Webcam started. Begin signing...\n")
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            print("\nStop requested. Exiting stable sentence builder...")
+            break
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to capture frame.")
@@ -1061,6 +1123,9 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
                     flash_word = most_common_label
                     flash_until = now + 1.0
                     live_sentence = normalize_sentence_text(" ".join(sentence))
+                    # Call results callback with the confirmed word
+                    if results_callback is not None:
+                        results_callback(most_common_label, float(count) / buffer_size)
                     print(f"  + '{most_common_label}'  ->  {live_sentence}")
                     # ── Step 7: text-to-speech ─────────────────────────────────
                     if tts_engine:
@@ -1159,16 +1224,20 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
         cv2.putText(frame, f"FPS:{int(fps)}", (w - 90, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1, cv2.LINE_AA)
 
-        cv2.imshow('ISL Stable Sentence Builder', frame)
+        if frame_callback is not None:
+            frame_callback(frame)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('c'):
-            # ── Step 9: reset sentence ────────────────────────────────────────
-            sentence = []
-            pred_buffer.clear()
-            print("  Sentence cleared.")
+        if display:
+            cv2.imshow('ISL Stable Sentence Builder', frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('c'):
+                # ── Step 9: reset sentence ────────────────────────────────────────
+                sentence = []
+                pred_buffer.clear()
+                print("  Sentence cleared.")
 
     # Final output
     if sentence:
@@ -1176,7 +1245,8 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
         print(f"\nFinal sentence: {final}")
 
     cap.release()
-    cv2.destroyAllWindows()
+    if display:
+        cv2.destroyAllWindows()
     detector.close()
     print("\u2713 Stable sentence builder stopped\n")
 

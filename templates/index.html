@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ISL Gesture Recognition - Admin Dashboard">
+    <title>ISL Gesture Recognition Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="shell-body">
+    <!-- ─── MAIN SHELL ─────────────────────────────────────────────────────── -->
+    <main class="shell">
+        <!-- ─── USER PANEL ───────────────────────────────────────────────── -->
+        <section class="user-panel" id="userView">
+            <div class="panel-header">
+                <div class="brand-line">
+                    <span class="brand-title">ISL TRANSLATOR</span>
+                    <span class="brand-divider">|</span>
+                    <span class="brand-state" id="statusText">IDLE</span>
+                    <span class="brand-note">(Offline)</span>
+                </div>
+                <div class="panel-status">
+                    <span class="status-dot" id="statusLight"></span>
+                    <span class="panel-status-text">LOCAL (Offline)</span>
+                </div>
+            </div>
+
+            <div class="camera-card">
+                <div class="camera-feed" id="cameraFeed">
+                    <img id="cameraStream" class="camera-stream hidden" alt="Live camera feed" />
+                    <div class="camera-placeholder">
+                        <svg viewBox="0 0 100 100" class="camera-icon">
+                            <circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" stroke-width="2"/>
+                            <circle cx="50" cy="50" r="25" fill="none" stroke="currentColor" stroke-width="2"/>
+                            <rect x="75" y="20" width="15" height="15" fill="currentColor"/>
+                        </svg>
+                        <p>Camera Feed</p>
+                        <p class="hint">(Starts when you begin prediction)</p>
+                    </div>
+                </div>
+                <div class="camera-caption" id="cameraCaption">READY</div>
+            </div>
+
+            <div class="translation-card">
+                <div class="translation-text" id="translationOutput">
+                    <span class="idle-text">Waiting for hand gesture...</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ─── SIDE PANEL ───────────────────────────────────────────────── -->
+        <aside class="side-panel">
+            <div class="side-status">
+                <span class="status-dot"></span>
+                <span>LOCAL (Offline)</span>
+            </div>
+            <div class="dock">
+                <button class="dock-button" id="toggleAdminBtn" title="Open Admin Panel">ADMIN</button>
+                <button class="dock-button" id="toggleConsoleBtn" title="Open Console">LOGS</button>
+                <button class="dock-button" id="toggleSettingsBtn" title="Recognition Settings">SET</button>
+            </div>
+            <div class="side-actions">
+                <button id="startStreamBtn" class="pill pill-primary" title="Start real-time gesture recognition">START</button>
+                <button id="stopStreamBtn" class="pill" title="Stop real-time gesture recognition">STOP</button>
+                <div id="recognizingIndicator" class="pill pill-indicator" title="Recognition status">
+                    <span class="indicator-dot"></span>
+                    <span>RECOGNIZING</span>
+                </div>
+                <button id="clearTranslationBtn" class="pill" title="Clear translation output">CLEAR</button>
+                <button class="icon-button" id="muteBtn" title="Mute or unmute audio">SOUND</button>
+            </div>
+        </aside>
+    </main>
+
+    <!-- ─── ADMIN DRAWER ─────────────────────────────────────────────────── -->
+    <section class="admin-drawer" id="adminView">
+        <div class="admin-header">
+            <h2>Admin Control Panel</h2>
+            <button class="btn btn-secondary" id="closeAdminBtn" title="Close admin panel">Close</button>
+        </div>
+
+        <div class="admin-content">
+
+                <!-- Tab Navigation -->
+                <div class="tab-navigation">
+                    <button class="tab-button active" data-tab="data-collection" title="Collect training data">Data Collection</button>
+                    <button class="tab-button" data-tab="gesture-library" title="Manage saved gestures">Gesture Library</button>
+                    <button class="tab-button" data-tab="training" title="Train the model">Model Training</button>
+                    <button class="tab-button" data-tab="console" title="View system logs">Console</button>
+                </div>
+
+                <!-- ─── TAB 1: DATA COLLECTION ────────────────────────────── -->
+                <div class="tab-content active" id="tab-data-collection">
+                    <div class="section-box">
+                        <h3>Capture New Gesture</h3>
+                        
+                        <div class="form-group">
+                            <label for="gestureName" class="form-label">Gesture Name:</label>
+                            <input type="text" id="gestureName" class="form-input" placeholder="e.g., HELLO, A, 1" maxlength="50">
+                            <p class="form-hint">Use uppercase letters, numbers, or underscores</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Capture Type:</label>
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input type="radio" name="captureType" value="images" checked>
+                                    Static Images (for letters/still poses)
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="captureType" value="video">
+                                    Video Clips (for dynamic/motion gestures)
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="imageSamplesGroup">
+                            <label for="numSamples" class="form-label">Number of Samples:</label>
+                            <input type="number" id="numSamples" class="form-input" value="50" min="1" max="500">
+                            <p class="form-hint">Recommended: 50-100 samples per gesture</p>
+                        </div>
+
+                        <div class="form-group hidden" id="videoClipsGroup">
+                            <label for="numClips" class="form-label">Number of Video Clips:</label>
+                            <input type="number" id="numClips" class="form-input" value="50" min="1" max="200">
+                        </div>
+
+                        <div class="form-group hidden" id="clipFramesGroup">
+                            <label for="clipFrames" class="form-label">Frames per Clip:</label>
+                            <input type="number" id="clipFrames" class="form-input" value="30" min="10" max="120">
+                        </div>
+
+                        <button id="startCaptureBtn" class="btn btn-primary btn-lg" title="Start capturing gesture data">
+                            <span class="btn-icon">📹</span> Start Capture
+                        </button>
+                        
+                        <div id="captureProgress" class="progress-container hidden">
+                            <div class="progress-bar" id="captureProgressBar"></div>
+                            <p class="progress-text" id="captureProgressText">Capturing...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ─── TAB 2: GESTURE LIBRARY ────────────────────────────── -->
+                <div class="tab-content" id="tab-gesture-library">
+                    <div class="section-box">
+                        <h3>Saved Gestures</h3>
+                        
+                        <button id="refreshGesturesBtn" class="btn btn-secondary" title="Refresh gesture list">
+                            <span class="btn-icon">🔄</span> Refresh
+                        </button>
+
+                        <div id="gestureList" class="gesture-list">
+                            <p class="empty-state">Loading gestures...</p>
+                        </div>
+
+                        <div class="section-divider"></div>
+
+                        <h3>Dataset Preparation</h3>
+                        <p class="form-hint">Before training, extract landmarks from collected images:</p>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="useNormalizedCheckbox" checked>
+                                Use normalized landmarks (recommended)
+                            </label>
+                        </div>
+
+                        <button id="extractLandmarksBtn" class="btn btn-secondary btn-lg" title="Extract landmarks from gesture data">
+                            <span class="btn-icon">⚙️</span> Extract Landmarks
+                        </button>
+
+                        <div id="extractProgress" class="progress-container hidden">
+                            <div class="progress-bar" id="extractProgressBar"></div>
+                            <p class="progress-text" id="extractProgressText">Extracting landmarks...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ─── TAB 3: MODEL TRAINING ─────────────────────────────── -->
+                <div class="tab-content" id="tab-training">
+                    <div class="section-box">
+                        <h3>Train Gesture Model</h3>
+                        <p class="form-hint">Train a BiLSTM model on your collected gesture data</p>
+
+                        <div class="form-group">
+                            <label for="testSize" class="form-label">Test Set Size:</label>
+                            <div class="slider-container">
+                                <input type="range" id="testSize" min="0.1" max="0.5" step="0.05" value="0.2" class="control-slider">
+                                <span id="testSizeValue">0.2 (20%)</span>
+                            </div>
+                        </div>
+
+                        <button id="trainModelBtn" class="btn btn-primary btn-lg" title="Start model training">
+                            <span class="btn-icon">🧠</span> Train Model
+                        </button>
+
+                        <div id="trainingProgress" class="progress-container hidden">
+                            <div class="progress-bar" id="trainingProgressBar"></div>
+                            <p class="progress-text" id="trainingProgressText">Training model... This may take several minutes.</p>
+                            <div class="training-details" id="trainingDetails"></div>
+                        </div>
+
+                        <div class="info-box">
+                            <h4>ℹ️ What happens next:</h4>
+                            <ul>
+                                <li>Data is split into training (80%) and test (20%) sets</li>
+                                <li>A Bidirectional LSTM neural network is trained</li>
+                                <li>Model accuracy is evaluated on test data</li>
+                                <li>Best weights are saved to <code>models/bilstm_model.keras</code></li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ─── TAB 4: CONSOLE ─────────────────────────────────────── -->
+                <div class="tab-content" id="tab-console">
+                    <div class="section-box">
+                        <h3>System Console</h3>
+                        <p class="form-hint">Real-time logs from the Python backend</p>
+
+                        <div class="console-controls">
+                            <button id="clearLogsBtn" class="btn btn-secondary" title="Clear console logs">Clear Logs</button>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="autoScrollCheckbox" checked>
+                                Auto-scroll
+                            </label>
+                        </div>
+
+                        <div class="console-output" id="consoleOutput">
+                            <div class="console-line">[System] Dashboard initialized. Ready to control pipeline.</div>
+                        </div>
+                    </div>
+                </div>
+        </div>
+    </section>
+
+    <div class="admin-backdrop" id="adminBackdrop"></div>
+
+    <!-- JavaScript -->
+    <script src="/static/main.js"></script>
+</body>
+</html>

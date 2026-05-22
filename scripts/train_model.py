@@ -27,7 +27,8 @@ MAX_SEQ_FRAMES = 30
 def train_model(sequences_npz='dataset/sequences.npz',
                 model_output='models/gesture_model.pkl',
                 keras_model_output='models/bilstm_model.keras',
-                test_size=0.2, random_state=42):
+                test_size=0.2, random_state=42,
+                epochs=10, batch_size=12):
     """
     Train a Bidirectional LSTM classifier on the landmark sequences dataset.
 
@@ -37,6 +38,8 @@ def train_model(sequences_npz='dataset/sequences.npz',
         keras_model_output (str): Path to save the Keras model
         test_size (float): Proportion of dataset to use as test set
         random_state (int): Random seed for reproducibility
+        epochs (int): Number of training epochs
+        batch_size (int): Size of training batches
     """
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     full_npz_path = os.path.join(script_dir, sequences_npz)
@@ -67,7 +70,16 @@ def train_model(sequences_npz='dataset/sequences.npz',
         print(f"  {lbl:20s}: {label_counts[lbl]}")
     print()
 
-    min_samples = min(label_counts.values())
+    counts = list(label_counts.values())
+    min_samples = min(counts)
+    max_samples = max(counts)
+    imbalance_ratio = max_samples / min_samples if min_samples > 0 else 0
+
+    print(f"Class Balance Check:")
+    print(f"  - Imbalance Ratio (Max/Min): {imbalance_ratio:.2f}")
+    if imbalance_ratio > 2.0:
+        print(f"  ⚠ Warning: High imbalance detected. Model may be biased towards {max(label_counts, key=label_counts.get)}")
+
     if min_samples < 10:
         print(f"{'='*60}")
         print("⚠ DATA QUALITY WARNING")
@@ -152,8 +164,8 @@ def train_model(sequences_npz='dataset/sequences.npz',
     history = model.fit(
         X_train, y_train,
         validation_split=0.2,
-        epochs=100,
-        batch_size=32,
+        epochs=epochs,
+        batch_size=batch_size,
         callbacks=callbacks,
         verbose=1,
     )
