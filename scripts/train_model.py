@@ -34,7 +34,7 @@ def train_model(sequences_npz='dataset/sequences.npz',
                 model_output='models/gesture_model.pkl',
                 keras_model_output='models/bilstm_model.keras',
                 test_size=0.2, random_state=42,
-                epochs=10, batch_size=12):
+                epochs=100, batch_size=20):
     """
     Train a Bidirectional LSTM classifier on the landmark sequences dataset.
 
