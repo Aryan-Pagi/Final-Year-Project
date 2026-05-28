@@ -11,7 +11,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'script
 
 from scripts.collect_data import collect_data, collect_video_sequence
 from scripts.extract_landmarks import extract_landmarks_from_dataset
-from scripts.train_model import train_model
+from scripts.train_model import train_model, train_static_model
 from scripts.realtime_predict import predict_realtime, predict_words, predict_sentence, predict_stable_sentence
 
 
@@ -43,20 +43,30 @@ def print_menu():
 def collect_data_menu():
     """Menu for data collection."""
     print("\n" + "="*70)
-    print("DATA COLLECTION")
+    print("DATA COLLECTION — CHOOSE YOUR PHASE")
     print("="*70)
-    print("\nChoose collection mode:")
-    print("  1. Static images  — for letters (A-Z), digits (0-9), or still-pose words")
-    print("  2. Video clips    — for dynamic/motion word gestures (HELLO, THANKS, etc.)")
+    print("\n📊 RECOMMENDED WORKFLOW:")
+    print("  Phase 1: Digits (0-9) — stable base for gesture recognition")
+    print("  Phase 2: Letters (A-Z) — expand to full alphabet")
+    print("  Phase 2+: Dynamic words — custom gesture sequences")
+    print("\nWhat are you collecting?")
+    print("  1. STATIC IMAGES  — Digits (0-9), Letters (A-Z), or still-pose gestures")
+    print("  2. VIDEO CLIPS    — Dynamic/motion gestures (HELLO, THANK YOU, SORRY, etc.)")
     
-    mode = input("\nCollection mode (1/2, default: 1): ").strip() or "1"
+    mode = input("\nCollection type (1/2, default: 1): ").strip() or "1"
     
-    label = input("Enter gesture label: ").strip().upper()
+    label = input("Enter gesture label (e.g., 0, 5, A, Z, HELLO): ").strip().upper()
     if not label:
         print("Error: Label cannot be empty.")
         return
     
+    # Provide guidance based on label
+    phase = "Phase 1 (Digits)" if label.isdigit() and len(label) == 1 else \
+            "Phase 2 (Letters)" if label.isalpha() and len(label) == 1 else \
+            "Custom"
+    
     if mode == "2":
+        # Video clip collection
         try:
             num_clips = int(input("Number of clips to record (default: 50): ").strip() or "50")
             if num_clips <= 0:
@@ -73,9 +83,15 @@ def collect_data_menu():
         except ValueError:
             print("Error: Invalid number.")
             return
-        print(f"\nRecording {num_clips} video clips for label '{label}'...")
+        
+        print(f"\n📹 Recording {num_clips} video clips for label '{label}' ({phase})...")
+        print(f"   - Perform consistent motion, starting from neutral position")
+        print(f"   - Keep hands centered and well-lit")
+        print(f"   - Aim for balanced variations (left/right hand, different speeds)")
+        print()
         collect_video_sequence(label, num_clips=num_clips, clip_frames=clip_frames)
     else:
+        # Static image collection
         try:
             num_samples = int(input("Number of images to collect (default: 100): ").strip() or "100")
             if num_samples <= 0:
@@ -84,7 +100,11 @@ def collect_data_menu():
         except ValueError:
             print("Error: Invalid number.")
             return
-        print(f"\nCollecting {num_samples} images for label '{label}'...")
+        print(f"\n📸 Collecting {num_samples} static images for label '{label}' ({phase})...")
+        print(f"    - Hold gesture steady and centered in frame")
+        print(f"    - Use consistent lighting and plain background")
+        print(f"    - Press SPACE to capture, Q to quit")
+        print()
         collect_data(label, num_samples)
 
 
@@ -111,8 +131,17 @@ def train_model_menu():
     print("\n" + "="*70)
     print("MODEL TRAINING")
     print("="*70)
+    print("\nChoose training approach:")
+    print("  1a. Phase 1 Only — Train on digits 0-9 only (static classifier)")
+    print("       └─ Best for: Getting started, quick digit recognition baseline")
+    print("  1b. Phase 2 Full — Train on digits 0-9 + letters A-Z (combined static)")
+    print("       └─ Best for: Complete alphabet recognition (recommended after Phase 1)")
+    print("  2.  Dynamic Words — Train on motion video clips (BiLSTM)")
+    print("       └─ Best for: Custom gesture words (HELLO, THANKS, SORRY, etc.)")
     
-    test_size_input = input("\nEnter test set size (0-1, default: 0.2): ").strip()
+    mode_input = input("\nTraining mode (1a/1b/2, default: 1b): ").strip().lower() or "1b"
+    
+    test_size_input = input("Enter test set size (0-1, default: 0.2): ").strip()
     
     try:
         if test_size_input:
@@ -126,8 +155,21 @@ def train_model_menu():
         print("Warning: Invalid input. Using default test size (0.2)")
         test_size = 0.2
     
-    print("\nTraining model...")
-    train_model(test_size=test_size)
+    if mode_input == "2":
+        print("\n🎥 Training Dynamic Gesture Classifier (BiLSTM)...")
+        print("   This will auto-detect all video clips in dataset/raw_clips/")
+        print()
+        train_model(test_size=test_size)
+    elif mode_input == "1a":
+        print("\n🎯 Training Phase 1 Classifier (Digits 0-9 only)...")
+        print("   Model saved to: models/static_classifier.pkl")
+        print()
+        train_static_model(test_size=test_size)
+    else:  # 1b or default
+        print("\n🌟 Training Phase 2 Combined Classifier (0-9 + A-Z)...")
+        print("   Model saved to: models/static_classifier_full.pkl")
+        print()
+        train_combined_static_model(test_size=test_size)
 
 
 def realtime_prediction_menu():
@@ -135,6 +177,23 @@ def realtime_prediction_menu():
     print("\n" + "="*70)
     print("REAL-TIME PREDICTION")
     print("="*70)
+    
+    print("\nChoose which model to use:")
+    print("  1. Phase 1 Model — Digits 0-9 only (static_classifier.pkl)")
+    print("  2. Phase 2 Model — Digits 0-9 + Letters A-Z (static_classifier_full.pkl)")
+    print("  3. Dynamic Model — Motion-based words (BiLSTM)")
+    
+    model_choice = input("\nModel (1/2/3, default: 2): ").strip() or "2"
+    
+    if model_choice == "1":
+        model_path = 'models/static_classifier.pkl'
+        print("\n🎯 Using Phase 1 Model (digits 0-9)")
+    elif model_choice == "3":
+        model_path = 'models/bilstm_model.keras'
+        print("\n🎥 Using Dynamic Model (motion gestures)")
+    else:  # 2 or default
+        model_path = 'models/static_classifier_full.pkl'
+        print("\n🌟 Using Phase 2 Model (0-9 + A-Z)")
     
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
@@ -154,7 +213,8 @@ def realtime_prediction_menu():
         confidence_threshold = 0.7
     
     print("\nStarting real-time prediction...")
-    predict_realtime(use_normalized=use_normalized, 
+    predict_realtime(model_path=model_path,
+                    use_normalized=use_normalized, 
                     confidence_threshold=confidence_threshold)
 
 
@@ -163,6 +223,23 @@ def word_formation_menu():
     print("\n" + "="*70)
     print("WORD FORMATION MODE")
     print("="*70)
+    
+    print("\nChoose which model to use:")
+    print("  1. Phase 1 Model — Digits 0-9 only")
+    print("  2. Phase 2 Model — Digits 0-9 + Letters A-Z (recommended)")
+    print("  3. Dynamic Model — Motion-based words")
+    
+    model_choice = input("\nModel (1/2/3, default: 2): ").strip() or "2"
+    
+    if model_choice == "1":
+        model_path = 'models/static_classifier.pkl'
+        print("\n🎯 Using Phase 1 Model (digits 0-9)")
+    elif model_choice == "3":
+        model_path = 'models/bilstm_model.keras'
+        print("\n🎥 Using Dynamic Model (motion gestures)")
+    else:  # 2 or default
+        model_path = 'models/static_classifier_full.pkl'
+        print("\n🌟 Using Phase 2 Model (0-9 + A-Z)")
     
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
@@ -194,7 +271,8 @@ def word_formation_menu():
         hold_duration = 1.0
     
     print("\nStarting word formation mode...")
-    predict_words(use_normalized=use_normalized,
+    predict_words(model_path=model_path,
+                  use_normalized=use_normalized,
                   confidence_threshold=confidence_threshold,
                   hold_duration=hold_duration)
 
@@ -204,6 +282,23 @@ def sentence_formation_menu():
     print("\n" + "="*70)
     print("SENTENCE FORMATION MODE")
     print("="*70)
+
+    print("\nChoose which model to use:")
+    print("  1. Phase 1 Model — Digits 0-9 only")
+    print("  2. Phase 2 Model — Digits 0-9 + Letters A-Z (recommended)")
+    print("  3. Dynamic Model — Motion-based words")
+    
+    model_choice = input("\nModel (1/2/3, default: 2): ").strip() or "2"
+    
+    if model_choice == "1":
+        model_path = 'models/static_classifier.pkl'
+        print("\n🎯 Using Phase 1 Model (digits 0-9)")
+    elif model_choice == "3":
+        model_path = 'models/bilstm_model.keras'
+        print("\n🎥 Using Dynamic Model (motion gestures)")
+    else:  # 2 or default
+        model_path = 'models/static_classifier_full.pkl'
+        print("\n🌟 Using Phase 2 Model (0-9 + A-Z)")
 
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
@@ -237,7 +332,8 @@ def sentence_formation_menu():
         auto_space_after = 1.0
 
     print("\nStarting sentence formation mode...")
-    predict_sentence(use_normalized=use_normalized,
+    predict_sentence(model_path=model_path,
+                     use_normalized=use_normalized,
                      confidence_threshold=confidence_threshold,
                      hold_duration=hold_duration,
                      auto_space_after=auto_space_after)
@@ -251,6 +347,23 @@ def stable_sentence_menu():
     print("\nUses a prediction buffer: a gesture is confirmed only when the")
     print("same label appears in 7 out of 10 consecutive frames.")
 
+    print("\nChoose which model to use:")
+    print("  1. Phase 1 Model — Digits 0-9 only")
+    print("  2. Phase 2 Model — Digits 0-9 + Letters A-Z (recommended)")
+    print("  3. Dynamic Model — Motion-based words")
+    
+    model_choice = input("\nModel (1/2/3, default: 2): ").strip() or "2"
+    
+    if model_choice == "1":
+        model_path = 'models/static_classifier.pkl'
+        print("\n🎯 Using Phase 1 Model (digits 0-9)")
+    elif model_choice == "3":
+        model_path = 'models/bilstm_model.keras'
+        print("\n🎥 Using Dynamic Model (motion gestures)")
+    else:  # 2 or default
+        model_path = 'models/static_classifier_full.pkl'
+        print("\n🌟 Using Phase 2 Model (0-9 + A-Z)")
+
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
 
@@ -261,20 +374,13 @@ def stable_sentence_menu():
             confidence_threshold = 0.5
     except ValueError:
         confidence_threshold = 0.5
-
+    
     tts_choice = input("Enable text-to-speech? (y/N): ").strip().lower()
     use_tts = tts_choice == 'y'
 
     print("\nStarting stable sentence builder...")
-    predict_stable_sentence(use_normalized=use_normalized,
-                             confidence_threshold=confidence_threshold,
-                             use_tts=use_tts)
-
-
-def quick_setup():
-    """Quick setup guide for first-time users."""
-    print("\n" + "="*70)
-    print("QUICK SETUP GUIDE")
+    predict_stable_sentence(model_path=model_path,
+                             use_normalized=use_normalized,
     print("="*70)
     print("\nWelcome to the ISL Gesture Recognition System!")
     print("\nFor first-time setup, follow these steps:")

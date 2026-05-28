@@ -377,3 +377,139 @@ def get_fps(prev_time, curr_time):
         fps = 0
     
     return fps
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PREPROCESSING HELPERS FOR STATIC/DYNAMIC SPLIT
+# ──────────────────────────────────────────────────────────────────────────
+
+def aspect_aware_padding(frame, target_size=(640, 480)):
+    """
+    Apply aspect-aware letterbox padding to ensure consistent preprocessing
+    without distorting the hand.
+    
+    Resizes frame to target_size while maintaining aspect ratio and padding
+    any empty space with a neutral color.
+    
+    Args:
+        frame (numpy.ndarray): Input image (BGR format)
+        target_size (tuple): Target (width, height) for the padded output
+    
+    Returns:
+        tuple: (padded_frame, scale, top_left_offset)
+            - padded_frame: Resized and padded frame
+            - scale: Scaling factor applied
+            - top_left_offset: (x, y) offset of original frame in padded frame
+    """
+    h, w = frame.shape[:2]
+    target_w, target_h = target_size
+    
+    # Calculate scale to fit within target while maintaining aspect ratio
+    scale = min(target_w / w, target_h / h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    
+    # Resize frame
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    
+    # Create padded frame with neutral gray background
+    padded = np.ones((target_h, target_w, 3), dtype=np.uint8) * 128
+    
+    # Calculate offset to center the resized image
+    x_offset = (target_w - new_w) // 2
+    y_offset = (target_h - new_h) // 2
+    
+    # Place resized frame in center
+    padded[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
+    
+    return padded, scale, (x_offset, y_offset)
+
+
+def normalize_landmarks_to_unit_square(landmarks):
+    """
+    Normalize landmarks to a unit square [0, 1] based on their bounding box,
+    ensuring consistent scale and position invariance.
+    
+    This ensures static digits maintain consistent proportions regardless of
+    hand size or distance from camera.
+    
+    Args:
+        landmarks (numpy.ndarray): Flattened array of 21 landmarks × 3 coords (63 values)
+    
+    Returns:
+        numpy.ndarray: Normalized landmarks, or original if normalization fails
+    """
+    if landmarks is None or len(landmarks) < 63:
+        return landmarks
+    
+    try:
+        points = landmarks.reshape(21, 3)
+        
+        # Extract x and y coordinates (ignore z for bounding box)
+        x_coords = points[:, 0]
+        y_coords = points[:, 1]
+        
+        # Find bounding box
+        x_min, x_max = x_coords.min(), x_coords.max()
+        y_min, y_max = y_coords.min(), y_coords.max()
+        
+        # Avoid division by zero
+        x_range = x_max - x_min if x_max > x_min else 1.0
+        y_range = y_max - y_min if y_max > y_min else 1.0
+        
+        # Normalize each landmark
+        normalized = points.copy()
+        normalized[:, 0] = (points[:, 0] - x_min) / x_range
+        normalized[:, 1] = (points[:, 1] - y_min) / y_range
+        # Keep z-coordinate as-is (already normalized by MediaPipe)
+        
+        return normalized.flatten()
+    except Exception:
+        # On any error, return original landmarks
+        return landmarks
+
+
+def compute_hand_bounding_box(landmarks):
+    """
+    Compute bounding box dimensions for a hand from landmarks.
+    
+    Useful for checking hand size and position consistency.
+    
+    Args:
+        landmarks (numpy.ndarray): Flattened array of 21 landmarks × 3 coords (63 values)
+    
+    Returns:
+        dict: {
+            'x_min', 'x_max', 'y_min', 'y_max': Bounding box coordinates
+            'width', 'height': Bounding box dimensions
+            'center_x', 'center_y': Center of bounding box
+            'area': Approximate area (width * height)
+        }
+        or None if landmarks are invalid
+    """
+    if landmarks is None or len(landmarks) < 63:
+        return None
+    
+    try:
+        points = landmarks.reshape(21, 3)
+        x_coords = points[:, 0]
+        y_coords = points[:, 1]
+        
+        x_min, x_max = float(x_coords.min()), float(x_coords.max())
+        y_min, y_max = float(y_coords.min()), float(y_coords.max())
+        
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        return {
+            'x_min': x_min,
+            'x_max': x_max,
+            'y_min': y_min,
+            'y_max': y_max,
+            'width': width,
+            'height': height,
+            'center_x': (x_min + x_max) / 2,
+            'center_y': (y_min + y_max) / 2,
+            'area': width * height
+        }
+    except Exception:
+        return None

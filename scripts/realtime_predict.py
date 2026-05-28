@@ -129,6 +129,10 @@ def normalize_sentence_text(text, add_terminal_punctuation=False):
 def load_model(model_path='models/gesture_model.pkl'):
     """
     Load the trained model and label encoder.
+    
+    Supports both:
+    - Static gesture models (RandomForest) for digits/letters
+    - Dynamic gesture models (BiLSTM) for motion-based words
 
     Returns:
         tuple: (model, label_encoder, uses_engineered, num_features, model_meta)
@@ -166,10 +170,13 @@ def load_model(model_path='models/gesture_model.pkl'):
                 print(f"Error: Keras model file not found: {keras_full_path}")
                 return None, None, False, None, {}
             model = tf.keras.models.load_model(keras_full_path)
-            print(f"\u2713 BiLSTM model loaded successfully")
-        else:
+            print(f"✓ BiLSTM model (dynamic gestures) loaded successfully")
+        elif model_type == 'RandomForest_Static':
             model = model_data['model']
-            print(f"\u2713 Model loaded successfully ({model_type})")
+            print(f"✓ RandomForest model (static gestures) loaded successfully")
+        else:
+            model = model_data.get('model')
+            print(f"✓ Model loaded successfully ({model_type})")
 
         print(f"  - Classes: {', '.join(label_encoder.classes_)}")
         if isinstance(model_data.get('test_accuracy'), float):
@@ -211,6 +218,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
         return
 
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
+    is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
     feat_size = model_meta.get('feature_size', 93)
 
@@ -299,7 +307,15 @@ def predict_realtime(model_path='models/gesture_model.pkl',
             if uses_engineered:
                 landmarks = compute_engineered_features(landmarks)
 
-            if is_bilstm:
+            if is_random_forest:
+                # Static gesture prediction using RandomForest
+                # Reshape single feature vector for sklearn model
+                features = landmarks.reshape(1, -1)
+                predicted_label = model.predict(features)[0]
+                probabilities = model.predict_proba(features)[0]
+                class_idx = label_encoder.transform([predicted_label])[0]
+                confidence = float(probabilities[class_idx])
+            elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -450,12 +466,13 @@ def predict_words(model_path='models/gesture_model.pkl',
         return
 
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
+    is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
     feat_size = model_meta.get('feature_size', 93)
 
     from utils.mediapipe_utils import get_engineered_feature_names
     base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm
+    unified_mode = (not is_bilstm and not is_random_forest
                     and num_features is not None
                     and num_features > base_feat_count)
     TIME_WINDOW = 1.5  # seconds — used in unified_mode only
@@ -524,7 +541,14 @@ def predict_words(model_path='models/gesture_model.pkl',
             if uses_engineered:
                 landmarks = compute_engineered_features(landmarks)
 
-            if is_bilstm:
+            if is_random_forest:
+                # Static gesture prediction using RandomForest
+                features = landmarks.reshape(1, -1)
+                predicted_label = model.predict(features)[0]
+                probabilities = model.predict_proba(features)[0]
+                class_idx = label_encoder.transform([predicted_label])[0]
+                confidence = float(probabilities[class_idx])
+            elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -700,12 +724,13 @@ def predict_sentence(model_path='models/gesture_model.pkl',
         return
 
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
+    is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
     feat_size = model_meta.get('feature_size', 93)
 
     from utils.mediapipe_utils import get_engineered_feature_names
     base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm
+    unified_mode = (not is_bilstm and not is_random_forest
                     and num_features is not None
                     and num_features > base_feat_count)
     TIME_WINDOW = 1.5  # seconds — used in unified_mode only
@@ -769,7 +794,14 @@ def predict_sentence(model_path='models/gesture_model.pkl',
             if uses_engineered:
                 landmarks = compute_engineered_features(landmarks)
 
-            if is_bilstm:
+            if is_random_forest:
+                # Static gesture prediction using RandomForest
+                features = landmarks.reshape(1, -1)
+                predicted_label = model.predict(features)[0]
+                probabilities = model.predict_proba(features)[0]
+                class_idx = label_encoder.transform([predicted_label])[0]
+                confidence = float(probabilities[class_idx])
+            elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -1014,13 +1046,19 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     print("Loading Model...")
     print(f"{'='*60}\n")
 
-    model, label_encoder, uses_engineered, num_features = load_model(model_path)
+    model, label_encoder, uses_engineered, num_features, model_meta = load_model(model_path)
     if model is None or label_encoder is None:
         return
 
+    is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
+    is_bilstm = model_meta.get('model_type') == 'BiLSTM'
+    
     from utils.mediapipe_utils import get_engineered_feature_names
     base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (num_features is not None and num_features > base_feat_count)
+    # Unified mode only applies to legacy models (not RandomForest or BiLSTM)
+    unified_mode = (not is_random_forest and not is_bilstm 
+                    and num_features is not None 
+                    and num_features > base_feat_count)
     TIME_WINDOW = 1.5  # seconds — matches training clip duration
     feat_window = deque()  # stores (timestamp, feature_array) pairs
 
@@ -1087,19 +1125,31 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
             # ── Step 2: feature engineering + unified mode ────────────────────
             if uses_engineered:
                 landmarks = compute_engineered_features(landmarks)
-            if unified_mode:
-                feat_window.append((now, landmarks))
-                while feat_window and (now - feat_window[0][0]) > TIME_WINDOW:
-                    feat_window.popleft()
-                arr = np.array([f for _, f in feat_window])
-                landmarks = np.concatenate([arr.mean(axis=0), arr.std(axis=0)])
-
+            
             # ── Step 3: model prediction ──────────────────────────────────────
             try:
-                pred_enc = model.predict(landmarks.reshape(1, -1))[0]
-                prob = model.predict_proba(landmarks.reshape(1, -1))[0]
-                confidence = prob[pred_enc]
-                predicted_label = label_encoder.inverse_transform([pred_enc])[0]
+                if is_random_forest:
+                    # Static gesture prediction using RandomForest
+                    features = landmarks.reshape(1, -1)
+                    predicted_label = model.predict(features)[0]
+                    probabilities = model.predict_proba(features)[0]
+                    class_idx = label_encoder.transform([predicted_label])[0]
+                    confidence = float(probabilities[class_idx])
+                elif unified_mode:
+                    feat_window.append((now, landmarks))
+                    while feat_window and (now - feat_window[0][0]) > TIME_WINDOW:
+                        feat_window.popleft()
+                    arr = np.array([f for _, f in feat_window])
+                    landmarks_unified = np.concatenate([arr.mean(axis=0), arr.std(axis=0)])
+                    pred_enc = model.predict(landmarks_unified.reshape(1, -1))[0]
+                    prob = model.predict_proba(landmarks_unified.reshape(1, -1))[0]
+                    confidence = prob[pred_enc]
+                    predicted_label = label_encoder.inverse_transform([pred_enc])[0]
+                else:
+                    pred_enc = model.predict(landmarks.reshape(1, -1))[0]
+                    prob = model.predict_proba(landmarks.reshape(1, -1))[0]
+                    confidence = prob[pred_enc]
+                    predicted_label = label_encoder.inverse_transform([pred_enc])[0]
             except Exception:
                 predicted_label = None
 

@@ -24,7 +24,7 @@ from flask_cors import CORS
 
 from scripts.collect_data import collect_data, collect_video_sequence
 from scripts.extract_landmarks import extract_landmarks_from_dataset
-from scripts.train_model import train_model
+from scripts.train_model import train_model, train_static_model, train_combined_static_model
 from scripts.realtime_predict import predict_realtime, predict_words, predict_sentence, predict_stable_sentence
 
 # ─── APP SETUP ─────────────────────────────────────────────────────────────
@@ -380,13 +380,20 @@ def extract_landmarks():
 
 # ─── API: Model Training ─────────────────────────────────────────────────
 
-def _train_model_worker(test_size):
+def _train_model_worker(test_size, model_type='combined'):
     """Background worker for model training."""
     try:
-        state.update(state="TRAINING", progress=0, message="Starting model training...")
-        state.log("Training gesture recognition model...")
+        state.update(state="TRAINING", progress=0, message=f"Starting {model_type} model training...")
         
-        train_model(test_size=test_size)
+        if model_type == 'dynamic':
+            state.log("Selected: BiLSTM for dynamic gestures")
+            train_model(test_size=test_size)
+        elif model_type == 'phase1':
+            state.log("Selected: RandomForest for Phase 1 (digits 0-9 only)")
+            train_static_model(test_size=test_size)
+        else:  # 'combined' or default
+            state.log("Selected: RandomForest for Phase 2 (digits 0-9 + letters A-Z)")
+            train_combined_static_model(test_size=test_size)
         
         state.update(state="IDLE", progress=100, message="Model training complete")
         state.log("Model training completed successfully")
@@ -396,24 +403,35 @@ def _train_model_worker(test_size):
 
 @app.route('/api/model/train', methods=['POST'])
 def train():
-    """Train the gesture recognition model."""
+    """Train the gesture recognition model.
+    
+    Request JSON:
+    {
+        "test_size": 0.2,
+        "model_type": "combined"  // 'phase1', 'combined', or 'dynamic'
+    }
+    """
     try:
         data = request.get_json()
         test_size = float(data.get('test_size', 0.2))
+        model_type = data.get('model_type', 'combined')  # 'phase1', 'combined', or 'dynamic'
+        
+        if model_type not in ['phase1', 'combined', 'dynamic']:
+            return jsonify({"error": "model_type must be 'phase1', 'combined', or 'dynamic'"}), 400
         
         if state.state != "IDLE":
             return jsonify({"error": f"System is currently {state.state}. Wait for it to finish."}), 409
         
         thread = threading.Thread(
             target=_train_model_worker,
-            args=(test_size,),
+            args=(test_size, model_type),
             daemon=True
         )
         thread.start()
         
         return jsonify({
             "success": True,
-            "message": "Started model training"
+            "message": f"Started {model_type} model training"
         })
     except Exception as e:
         state.log(f"Error starting training: {str(e)}")
@@ -425,15 +443,16 @@ stream_active = False
 stream_thread = None
 stream_stop_event = None
 
-def _stream_worker(mode, confidence_threshold, stop_event):
+def _stream_worker(mode, model_path, confidence_threshold, stop_event):
     """Background worker for real-time gesture prediction."""
     global stream_active
     try:
         state.update(state="RECOGNIZING", message=f"Starting {mode} mode...")
-        state.log(f"Started real-time prediction in {mode} mode")
+        state.log(f"Started real-time prediction in {mode} mode with model: {model_path}")
         
         if mode == "letter":
             predict_realtime(
+                model_path=model_path,
                 use_normalized=True,
                 confidence_threshold=confidence_threshold,
                 stop_event=stop_event,
@@ -443,6 +462,7 @@ def _stream_worker(mode, confidence_threshold, stop_event):
             )
         elif mode == "word":
             predict_words(
+                model_path=model_path,
                 use_normalized=True,
                 confidence_threshold=confidence_threshold,
                 stop_event=stop_event,
@@ -452,6 +472,7 @@ def _stream_worker(mode, confidence_threshold, stop_event):
             )
         elif mode == "sentence":
             predict_sentence(
+                model_path=model_path,
                 use_normalized=True,
                 confidence_threshold=confidence_threshold,
                 stop_event=stop_event,
@@ -461,6 +482,7 @@ def _stream_worker(mode, confidence_threshold, stop_event):
             )
         elif mode == "stable":
             predict_stable_sentence(
+                model_path=model_path,
                 use_normalized=True,
                 confidence_threshold=confidence_threshold,
                 stop_event=stop_event,
@@ -479,7 +501,15 @@ def _stream_worker(mode, confidence_threshold, stop_event):
 
 @app.route('/api/stream/start', methods=['POST'])
 def start_stream():
-    """Start real-time gesture prediction."""
+    """Start real-time gesture prediction.
+    
+    Request JSON:
+    {
+        "mode": "letter",  // letter, word, sentence, stable
+        "model_path": "models/static_classifier_full.pkl",  // optional, defaults to phase 2 model
+        "confidence_threshold": 0.7
+    }
+    """
     global stream_active, stream_thread, stream_stop_event
     try:
         if stream_active:
@@ -490,6 +520,7 @@ def start_stream():
         
         data = request.get_json()
         mode = data.get('mode', 'letter')  # letter, word, sentence, stable
+        model_path = data.get('model_path', 'models/static_classifier_full.pkl')  # Phase 2 by default
         confidence_threshold = float(data.get('confidence_threshold', 0.7))
 
         if not _check_model_available():
@@ -502,7 +533,7 @@ def start_stream():
         stream_stop_event = threading.Event()
         stream_thread = threading.Thread(
             target=_stream_worker,
-            args=(mode, confidence_threshold, stream_stop_event),
+            args=(mode, model_path, confidence_threshold, stream_stop_event),
             daemon=True
         )
         stream_thread.start()
@@ -510,7 +541,8 @@ def start_stream():
         return jsonify({
             "success": True,
             "message": f"Started {mode} recognition mode",
-            "mode": mode
+            "mode": mode,
+            "model": model_path
         })
     except Exception as e:
         stream_active = False

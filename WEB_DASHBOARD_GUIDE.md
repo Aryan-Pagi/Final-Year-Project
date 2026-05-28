@@ -28,11 +28,59 @@ http://localhost:5000
 
 ---
 
+## � Recommended Workflow: Digit-First Phase
+
+**Start with digits 0-9 to build a stable classifier, then extend to letters and words.**
+
+### Phase 1: Collect & Train Digits 0-9
+
+1. **Go to Admin View → Data Collection tab**
+2. **For each digit (0-9):**
+   - Enter gesture name: **0** (then 1, 2, ..., 9)
+   - Select capture type: **Static Images**
+   - Set sample count: **100** (aim for balanced counts)
+   - Click **Start Capture**
+   - Show your hand making the digit gesture (centered, well-lit, plain background)
+   - Press SPACE to capture each image
+   - Wait for completion
+
+3. **Extract landmarks:**
+   - Go to **Gesture Library** tab
+   - Click **Extract Landmarks**
+   - Select: **Use normalized landmarks** (recommended)
+   - Monitor progress in console
+
+4. **Train the model:**
+   - Go to **Model Training** tab
+   - Test size: **0.2** (80% train, 20% test)
+   - Click **Train Model**
+   - Monitor progress and console output
+   - Check test accuracy in logs (should be >90%)
+
+5. **Test recognition:**
+   - Switch to **User View**
+   - Click **Start Prediction**
+   - Show digits 0-9 to camera
+   - Verify predictions are correct
+
+### Phase 2: Extend to A-Z (After Digit Base is Stable)
+
+- Repeat Phase 1 steps, but collect letters **A-Z** instead
+- Re-extract landmarks and re-train
+
+### Phase 3: Add Dynamic Words (Advanced)
+
+- Collect **video clips** for words like HELLO, THANK YOU, etc.
+- The system will automatically train a separate BiLSTM for dynamic gestures
+- Predictions will be routed to the correct model (static or dynamic)
+
+---
+
 ## 🎮 Dashboard Features
 
 ### User View (Prediction)
 - **Live Recognition**: Real-time gesture recognition from webcam
-- **Translation Display**: Large, high-contrast text showing recognized gestures
+- **Translation Display**: Large, high-contrast text showing recognized gestures and confidence
 - **Status Light**: Color-coded system state indicator
   - 🔵 Blue (IDLE) - System ready
   - 🟢 Green (RECOGNIZING) - Currently predicting
@@ -42,30 +90,55 @@ http://localhost:5000
 ### Admin View (Control Panel)
 
 #### 📹 Data Collection Tab
-- **Gesture Name Input**: Enter custom gesture labels (A-Z, 0-9, words)
+- **Gesture Name Input**: Enter custom gesture labels (digits 0-9, letters A-Z, or words)
 - **Capture Type Toggle**:
-  - Static Images: For single-pose gestures (letters, digits)
-  - Video Clips: For dynamic/motion gestures (HELLO, THANK YOU)
-- **Sample Configuration**: Set number of samples to collect
-- **Real-time Progress**: Visual feedback during capture
+  - **Static Images**: For single-pose gestures (digits, letters, still-pose words)
+    - Best for: Clear, centered, front-facing hand poses
+    - Samples recommended: 50-100 per gesture
+  - **Video Clips**: For dynamic/motion gestures (HELLO, THANK YOU, GOOD, BAD, etc.)
+    - Best for: Gestures with hand movement or shape change over time
+    - Clips recommended: 50 clips × 30 frames each per gesture
+- **Sample Configuration**: 
+  - Static: Number of images
+  - Video: Number of clips and frames per clip
+- **Real-time Progress**: Visual feedback and console output during capture
 
 #### 📚 Gesture Library Tab
 - **Gesture List**: View all saved gestures with sample counts
 - **Delete Gestures**: Remove unwanted training data
-- **Landmark Extraction**: Extract hand landmarks from images before training
-- **Normalized vs Raw**: Toggle between normalized and raw feature extraction
+- **Landmark Extraction**:
+  - Choose: **Normalized vs Raw landmarks**
+  - Recommended: **Normalized** for better generalization
+  - Processes all images in `dataset/raw_images/`
+  - Reports detection success rate and extracted features
 
 #### 🧠 Model Training Tab
-- **Train Button**: Start BiLSTM model training
-- **Test Size Configuration**: Adjust train/test split ratio
+- **Model Type Selection**: 
+  - For static digits/letters: Uses RandomForest (lightweight, fast)
+  - For dynamic clips: Uses compact BiLSTM (handles temporal sequences)
+  - System auto-detects based on collected data
+- **Test Size Configuration**: Adjust train/test split ratio (default: 0.2 = 80/20)
 - **Progress Bar**: Visual training progress indicator
-- **Training Information**: Details about the training process
+- **Training Information**: 
+  - Class balance check (warns if imbalanced)
+  - Model architecture details
+  - Validation and test accuracy
+  - Training time and model size
 
 #### 💻 Console Tab
 - **Real-time Logs**: See all system operations and status updates
-- **Error Reporting**: Catch and display any errors
+- **Error Reporting**: Catch and display any errors during capture/training
 - **Auto-scroll**: Keep console scrolled to latest message
 - **Clear Button**: Reset console history
+- **Sample output**:
+  ```
+  ✓ Dataset loaded: 1000 samples, 10 classes
+  Class Balance Check:
+    - Imbalance Ratio (Max/Min): 1.05
+    - All classes well-balanced ✓
+  ✓ Model trained successfully
+  - Test Accuracy: 96.50%
+  ```
 
 ---
 
@@ -73,29 +146,29 @@ http://localhost:5000
 
 ### Backend (Flask)
 - **app.py**: Main Flask server with API routes
-- Endpoints for all operations (capture, train, predict)
-- Background threading for long-running tasks
-- Status polling system
-- Logging system
+  - Endpoints for capture, landmark extraction, training, prediction
+  - Background threading for long-running tasks
+  - Status polling system
+  - Logging system with queue-based message handling
 
 ### Frontend (HTML/CSS/JS)
 - **index.html**: Main dashboard interface
-  - Two-view system (User & Admin)
+  - Dual-view system (User View & Admin View)
   - Tab-based admin panel
-  - Responsive design
+  - Responsive design for various screen sizes
   
-- **static/styles.css**: Modern styling with:
+- **static/styles.css**: Modern styling
   - CSS variables for easy customization
   - High-contrast accessibility
   - Responsive layout
-  - Status color system
+  - Status color system (Blue/Green/Yellow/Orange)
   
 - **static/main.js**: Interactive logic
   - API communication (fetch)
   - Real-time status polling
-  - Form handling
+  - Form handling and validation
   - Visual feedback
-  - Console logging
+  - Console logging with auto-scroll
 
 ---
 
@@ -113,12 +186,38 @@ All routes return JSON responses.
 
 ### Data Processing
 - `POST /api/capture/start` - Start data collection
+  - Parameters: `gesture_name`, `num_samples` (static) or `num_clips`, `clip_frames` (video)
 - `POST /api/landmarks/extract` - Extract landmarks from images
+  - Parameters: `use_normalized` (true/false)
 - `POST /api/model/train` - Train the gesture model
+  - Parameters: `test_size` (float)
 
 ### Real-time Prediction
 - `POST /api/stream/start` - Start live gesture recognition
 - `POST /api/stream/stop` - Stop live gesture recognition
+
+---
+
+## 🎯 Best Practices
+
+### Data Collection
+- **Lighting**: Use consistent, well-lit environments (avoid shadows)
+- **Background**: Plain, neutral backgrounds (desk, wall, curtain)
+- **Positioning**: Keep hand centered and at similar distance from camera
+- **Consistency**: Maintain similar hand orientation across samples
+- **Balance**: Collect equal samples for each gesture (100 per digit recommended)
+- **Quality**: Clean, clear images are better than large quantities of blurry data
+
+### Model Training
+- **Phase approach**: Start with digits 0-9, verify >90% accuracy, then expand
+- **Class balance**: Dashboard warns if classes are imbalanced
+- **Test size**: Use 0.2 (20% test) for datasets with <1000 samples
+- **Monitoring**: Check console output for accuracy, confusion matrix, and warnings
+
+### Real-time Prediction
+- **Confidence threshold**: Adjust based on your needs (default 0.7 = 70%)
+- **FPS**: Monitor FPS to ensure smooth real-time performance
+- **Prediction smoothing**: 7-frame history prevents jittery predictions
 
 ---
 
@@ -132,6 +231,7 @@ Edit the CSS variables in `static/styles.css` (top of file):
     --color-primary: #0066cc;      /* Primary blue */
     --color-success: #00aa00;      /* Success green */
     --color-danger: #dd0000;       /* Error red */
+    --color-warning: #ff9900;      /* Warning orange */
     /* ... more colors ... */
 }
 ```
@@ -160,6 +260,11 @@ System states:
 - `TRAINING` - Training the model
 - `RECOGNIZING` - Running real-time prediction
 
+### Model Routing
+- **Static gestures** (digits, letters): RandomForest classifier on 93 engineered features
+- **Dynamic gestures** (words with motion): Compact BiLSTM on 30-frame sequences
+- Automatic detection based on dataset layout and training data
+
 ### Progress Tracking
 - Progress bar updates via status polling
 - Real-time log updates via separate polling mechanism
@@ -167,36 +272,19 @@ System states:
 
 ---
 
-## 🚀 Workflow
+## 🚀 Workflow Summary
 
-### 1. Collect Training Data
-1. Switch to Admin View
-2. Go to "Data Collection" tab
-3. Enter gesture name and set sample count
-4. Click "Start Capture"
-5. Repeat for all desired gestures
+### Recommended: Digit-First Approach
 
-### 2. Extract Landmarks
-1. Go to "Gesture Library" tab
-2. Click "Extract Landmarks"
-3. Wait for completion (shows in console)
-
-### 3. Train Model
-1. Go to "Model Training" tab
-2. Adjust test size if needed
-3. Click "Train Model"
-4. Monitor progress and console
-5. Training completes and saves model
-
-### 4. Test Recognition
-1. Switch to User View
-2. Select prediction mode (Letter/Word/Sentence)
-3. Adjust confidence threshold
-4. Click "Start Prediction"
-5. Perform gestures in front of camera
-6. See real-time results in Translation Display
+1. **Collect Digits 0-9** (100 images each, balanced, well-lit, centered)
+2. **Extract Landmarks** (normalized, aim for >90% detection)
+3. **Train Model** (RandomForest on static digits, check test accuracy >90%)
+4. **Test Recognition** (verify predictions for 0-9)
+5. **Expand to A-Z** (after digit base is stable)
+6. **Add Dynamic Words** (HELLO, THANK YOU, etc. as video clips)
 
 ---
+
 
 ## 🎯 Accessibility Features
 
