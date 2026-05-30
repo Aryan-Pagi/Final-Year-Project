@@ -103,7 +103,8 @@ let appState = {
     statusPollTimer: null,
     logsPollTimer: null,
     lastTranslation: '',
-    frameRefreshInterval: null
+    frameRefreshInterval: null,
+    cameraPreviewTimer: null
 };
 
 // ─── INITIALIZATION ──────────────────────────────────────────────────────
@@ -203,6 +204,47 @@ function openAdminPanel(tabName = null) {
 
 function closeAdminPanel() {
     document.body.classList.remove('admin-open');
+}
+
+function startCameraPreview() {
+    if (!elements.cameraStream) {
+        return;
+    }
+
+    stopCameraPreview();
+
+    elements.cameraStream.onload = () => {
+        if (elements.cameraStream.classList.contains('hidden')) {
+            elements.cameraStream.classList.remove('hidden');
+        }
+        if (elements.cameraPlaceholder) {
+            elements.cameraPlaceholder.classList.add('hidden');
+        }
+    };
+
+    elements.cameraStream.onerror = () => {
+        console.warn('[CAM] Live stream failed to load');
+    };
+
+    elements.cameraStream.src = `/video_feed?t=${Date.now()}`;
+}
+
+function stopCameraPreview() {
+    if (appState.cameraPreviewTimer) {
+        clearInterval(appState.cameraPreviewTimer);
+        appState.cameraPreviewTimer = null;
+    }
+
+    if (elements.cameraStream) {
+        elements.cameraStream.onload = null;
+        elements.cameraStream.onerror = null;
+        elements.cameraStream.src = '';
+        elements.cameraStream.classList.add('hidden');
+    }
+
+    if (elements.cameraPlaceholder) {
+        elements.cameraPlaceholder.classList.remove('hidden');
+    }
 }
 
 // ─── TAB MANAGEMENT ────────────────────────────────────────────────────
@@ -447,42 +489,12 @@ async function startStream() {
         if (elements.startStreamBtn) elements.startStreamBtn.disabled = true;
         if (elements.stopStreamBtn) elements.stopStreamBtn.disabled = false;
 
-        if (elements.cameraStream) {
-            console.log('[STREAM] Camera element found, setting up display');
-            console.log('[STREAM] Elements:', {
-                cameraStream: !!elements.cameraStream,
-                cameraPlaceholder: !!elements.cameraPlaceholder,
-                hasHidden: elements.cameraStream.classList.contains('hidden')
-            });
-            
-            // Set up error/load handlers
-            elements.cameraStream.addEventListener('error', () => {
-                console.error('[CAM] Image failed to load');
-            });
-            
-            elements.cameraStream.addEventListener('load', () => {
-                console.log('[CAM] Image loaded successfully');
-            });
-            
-            // Use MJPEG streaming for smoother playback
-            const streamUrl = `/video_feed?t=${performance.now()}`;
-            console.log('[STREAM] Setting image src to:', streamUrl);
-            elements.cameraStream.src = streamUrl;
-            
-            // Then remove hidden class
-            elements.cameraStream.classList.remove('hidden');
-            console.log('[STREAM] Removed hidden class, new classes:', elements.cameraStream.className);
-            
-            // Hide placeholder
-            if (elements.cameraPlaceholder) {
-                elements.cameraPlaceholder.classList.add('hidden');
-            }
-        } else {
-            console.error('[STREAM] Camera element NOT found!');
-        }
+        startCameraPreview();
 
     } catch (error) {
         console.error('Error starting stream:', error);
+        if (elements.startStreamBtn) elements.startStreamBtn.disabled = false;
+        if (elements.stopStreamBtn) elements.stopStreamBtn.disabled = true;
         alert('Failed to start stream: ' + error.message);
     }
 }
@@ -503,13 +515,7 @@ async function stopStream() {
         if (elements.startStreamBtn) elements.startStreamBtn.disabled = false;
         if (elements.stopStreamBtn) elements.stopStreamBtn.disabled = true;
 
-        if (elements.cameraStream) {
-            elements.cameraStream.src = '';
-            elements.cameraStream.classList.add('hidden');
-        }
-        if (elements.cameraPlaceholder) {
-            elements.cameraPlaceholder.classList.remove('hidden');
-        }
+        stopCameraPreview();
 
     } catch (error) {
         console.error('Error stopping stream:', error);

@@ -254,14 +254,38 @@ def _model_metadata_path():
     return os.path.join(MODELS_PATH, 'gesture_model.pkl')
 
 
-def _check_model_available():
-    """Ensure the model metadata exists before starting prediction."""
-    model_path = _model_metadata_path()
-    if not os.path.exists(model_path):
+def _resolve_model_path(preferred_path=None):
+    """Resolve the first available trained model artifact."""
+    candidates = []
+    if preferred_path:
+        candidates.append(preferred_path)
+
+    candidates.extend([
+        os.path.join(MODELS_PATH, 'static_classifier.pkl'),
+        _model_metadata_path(),
+        os.path.join(MODELS_PATH, 'bilstm_model.keras'),
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        full_path = candidate if os.path.isabs(candidate) else os.path.join(BASE_DIR, candidate)
+        if os.path.exists(full_path):
+            return full_path
+
+    return None
+
+
+def _check_model_available(preferred_path=None):
+    """Ensure at least one model artifact exists before starting prediction."""
+    model_path = _resolve_model_path(preferred_path)
+    if not model_path:
         state.update(state="IDLE", message="Model not found. Train the model first.")
-        state.log(f"Model metadata missing: {model_path}")
-        return False
-    return True
+        state.log("No trained model artifacts were found")
+        return None
+    return model_path
 
 
 def _check_camera_available(device_index=0):
@@ -710,21 +734,29 @@ def start_stream():
         
         data = request.get_json()
         mode = data.get('mode', 'letter')  # letter, word, sentence, stable, diagnostic
-        model_path = data.get('model_path', 'models/static_classifier.pkl')
+        model_path = data.get('model_path')
         confidence_threshold = float(data.get('confidence_threshold', 0.7))
         print(f"[STREAM] start requested mode={mode} model_path={model_path} confidence={confidence_threshold}")
 
-        if mode != 'diagnostic' and not _check_model_available():
-            return jsonify({"error": "Model not found. Run extraction + training first."}), 409
+        resolved_model_path = model_path
+        if mode != 'diagnostic':
+            resolved_model_path = _check_model_available(model_path)
+            if not resolved_model_path:
+                return jsonify({"error": "Model not found. Run extraction + training first."}), 409
 
-        if not _check_camera_available():
-            return jsonify({"error": "Camera not available. Close other apps and retry."}), 409
+        if resolved_model_path:
+            print(f"[STREAM] resolved model path: {resolved_model_path}")
+        else:
+            print("[STREAM] diagnostic mode selected; no model path required")
+
+        if mode != 'diagnostic' and not resolved_model_path:
+            return jsonify({"error": "Model not found. Run extraction + training first."}), 409
         
         stream_active = True
         stream_stop_event = threading.Event()
         stream_thread = threading.Thread(
             target=_stream_worker,
-            args=(mode, model_path, confidence_threshold, stream_stop_event),
+            args=(mode, resolved_model_path, confidence_threshold, stream_stop_event),
             daemon=True
         )
         stream_thread.start()
@@ -750,9 +782,6 @@ def start_diagnostic_stream():
 
         if state.state != "IDLE":
             return jsonify({"error": f"System is currently {state.state}. Wait for it to finish."}), 409
-
-        if not _check_camera_available():
-            return jsonify({"error": "Camera not available. Close other apps and retry."}), 409
 
         stream_active = True
         stream_stop_event = threading.Event()

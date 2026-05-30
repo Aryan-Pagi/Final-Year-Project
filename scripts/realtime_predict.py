@@ -10,6 +10,7 @@ import pickle
 import numpy as np
 import time
 import re
+from pathlib import Path
 from collections import deque
 
 # Force UTF-8 console output on Windows to prevent Unicode print errors
@@ -136,6 +137,34 @@ def normalize_sentence_text(text, add_terminal_punctuation=False):
     return cleaned
 
 
+def _resolve_model_path(model_path='models/gesture_model.pkl'):
+    """Resolve a usable model path, preferring existing trained artifacts."""
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    candidates = []
+    if model_path:
+        candidates.append(model_path)
+
+    candidates.extend([
+        'models/gesture_model.pkl',
+        'models/static_classifier.pkl',
+        'models/bilstm_model.keras',
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        full_path = candidate
+        if not os.path.isabs(full_path):
+            full_path = os.path.join(script_dir, candidate)
+        if os.path.exists(full_path):
+            return full_path
+
+    return None
+
+
 def load_model(model_path='models/gesture_model.pkl'):
     """
     Load the trained model and label encoder.
@@ -150,16 +179,29 @@ def load_model(model_path='models/gesture_model.pkl'):
                'feature_size' keys (only populated for BiLSTM models).
     """
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    full_model_path = os.path.join(script_dir, model_path)
+    full_model_path = _resolve_model_path(model_path)
 
-    if not os.path.exists(full_model_path):
-        print(f"Error: Model file not found: {full_model_path}")
+    if not full_model_path or not os.path.exists(full_model_path):
+        print("Error: No trained model file found.")
         print("Please train the model first using train_model.py")
         return None, None, False, None, {}
 
     try:
-        with open(full_model_path, 'rb') as f:
-            model_data = pickle.load(f)
+        if full_model_path.endswith('.keras'):
+            import tensorflow as tf
+            model = tf.keras.models.load_model(full_model_path)
+            model_data = {
+                'label_encoder': None,
+                'uses_engineered_features': False,
+                'num_features': None,
+                'model_type': 'BiLSTM',
+                'max_seq_frames': 30,
+                'feature_size': 93,
+                'model': model,
+            }
+        else:
+            with open(full_model_path, 'rb') as f:
+                model_data = pickle.load(f)
 
         label_encoder = model_data['label_encoder']
         uses_engineered = model_data.get('uses_engineered_features', False)
@@ -175,7 +217,7 @@ def load_model(model_path='models/gesture_model.pkl'):
         if model_type == 'BiLSTM':
             import tensorflow as tf
             keras_rel_path = model_data.get('keras_model_path', 'models/bilstm_model.keras')
-            keras_full_path = os.path.join(script_dir, keras_rel_path)
+            keras_full_path = _resolve_model_path(keras_rel_path) or os.path.join(script_dir, keras_rel_path)
             if not os.path.exists(keras_full_path):
                 print(f"Error: Keras model file not found: {keras_full_path}")
                 return None, None, False, None, {}
@@ -188,6 +230,7 @@ def load_model(model_path='models/gesture_model.pkl'):
             model = model_data.get('model')
             print(f"✓ Model loaded successfully ({model_type})")
 
+        print(f"  - File: {Path(full_model_path).name}")
         print(f"  - Classes: {', '.join(label_encoder.classes_)}")
         if isinstance(model_data.get('test_accuracy'), float):
             print(f"  - Test Accuracy: {model_data['test_accuracy']:.2%}")
@@ -202,6 +245,7 @@ def load_model(model_path='models/gesture_model.pkl'):
 def predict_realtime(model_path='models/gesture_model.pkl', 
                     use_normalized=True,
                     confidence_threshold=0.7,
+                    device_index=0,
                     stop_event=None,
                     display=True,
                     frame_callback=None,
@@ -253,7 +297,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print(f"{'='*60}\n")
     
     # Initialize webcam
-    cap = _open_camera(0)
+    cap = _open_camera(device_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     
@@ -454,6 +498,7 @@ def predict_words(model_path='models/gesture_model.pkl',
                   use_normalized=True,
                   confidence_threshold=0.7,
                   hold_duration=1.0,
+                  device_index=0,
                   stop_event=None,
                   display=True,
                   frame_callback=None,
@@ -512,7 +557,7 @@ def predict_words(model_path='models/gesture_model.pkl',
     print(f"{'='*60}\n")
 
     # Initialize webcam
-    cap = _open_camera(0)
+    cap = _open_camera(device_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -714,6 +759,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
                      confidence_threshold=0.7,
                      hold_duration=1.0,
                      auto_space_after=1.0,
+                     device_index=0,
                      stop_event=None,
                      display=True,
                      frame_callback=None,
@@ -765,7 +811,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("  - BACKSPACE=delete  |  C=clear  |  Q=quit")
     print(f"{'='*60}\n")
 
-    cap = _open_camera(0)
+    cap = _open_camera(device_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -1027,6 +1073,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
                              buffer_size=10,
                              stability_threshold=6,
                              use_tts=True,
+                             device_index=0,
                              stop_event=None,
                              display=True,
                              frame_callback=None,
@@ -1100,7 +1147,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     flash_until = 0.0
 
     # ── Webcam ───────────────────────────────────────────────────────────────
-    cap = _open_camera(0)
+    cap = _open_camera(device_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 

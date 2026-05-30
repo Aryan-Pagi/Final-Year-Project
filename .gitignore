@@ -29,7 +29,7 @@ desktop.ini
 
 # Project Specific
 dataset/raw_images.zip
-models/*.pkl
+
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
