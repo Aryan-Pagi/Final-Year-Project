@@ -24,7 +24,7 @@ from flask_cors import CORS
 
 from scripts.collect_data import collect_data, collect_video_sequence
 from scripts.extract_landmarks import extract_landmarks_from_dataset
-from scripts.train_model import train_model, train_static_model, train_combined_static_model
+from scripts.train_model import train_model, train_static_model
 from scripts.realtime_predict import predict_realtime, predict_words, predict_sentence, predict_stable_sentence
 
 # ─── APP SETUP ─────────────────────────────────────────────────────────────
@@ -130,18 +130,49 @@ state.log("App initialized")
 # ─── MJPEG STREAM STATE ─────────────────────────────────────────────────-
 latest_frame = None
 latest_frame_lock = threading.Lock()
+frame_debug_counter = 0
+
+
+def _open_camera(device_index=0):
+    """Open the camera using a Windows-friendly backend fallback."""
+    if os.name == 'nt':
+        cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(device_index)
 
 
 def _update_latest_frame(frame):
     """Store the latest frame as JPEG bytes for the MJPEG stream."""
     if frame is None:
+        print("[FRAME] _update_latest_frame received None")
         return
-    success, buffer = cv2.imencode('.jpg', frame)
-    if not success:
-        return
-    with latest_frame_lock:
-        global latest_frame
-        latest_frame = buffer.tobytes()
+    try:
+        global frame_debug_counter
+        frame_debug_counter += 1
+        if frame_debug_counter <= 5 or frame_debug_counter % 30 == 0:
+            print(f"[FRAME] _update_latest_frame received frame #{frame_debug_counter} shape={getattr(frame, 'shape', None)}")
+
+        # Ensure frame is in BGR format for cv2.imencode
+        if len(frame.shape) == 2:  # Grayscale
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif len(frame.shape) != 3:
+            print(f"[FRAME] Skipping unexpected frame shape: {getattr(frame, 'shape', None)}")
+            return
+        
+        # Encode with lower quality for faster compression and network transfer
+        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not success:
+            print("[FRAME] JPEG encoding failed")
+            return
+        with latest_frame_lock:
+            global latest_frame
+            latest_frame = buffer.tobytes()
+        if frame_debug_counter <= 5 or frame_debug_counter % 30 == 0:
+            print(f"[FRAME] latest_frame updated, bytes={len(latest_frame)}")
+    except Exception as e:
+        print(f"[FRAME] Frame encoding error: {e}")
 
 
 def _update_prediction_result(gesture_label, confidence):
@@ -160,9 +191,61 @@ def _mjpeg_generator():
             time.sleep(0.05)
             continue
 
+        print(f"[FRAME] /video_feed yielding frame bytes={len(frame)}")
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         time.sleep(0.03)
+
+
+def _direct_camera_stream_worker(stop_event, device_index=0):
+    """Diagnostic worker that streams camera frames directly to latest_frame."""
+    global stream_active, frame_debug_counter, latest_frame
+    cap = _open_camera(device_index)
+    try:
+        if not cap.isOpened():
+            print(f"[DIAG] Could not open camera {device_index}")
+            state.update(state="IDLE", message="Diagnostic camera stream failed to open")
+            state.log("Diagnostic camera stream failed to open")
+            return
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        print(f"[DIAG] Camera stream started on device {device_index}")
+        state.update(state="RECOGNIZING", message="Diagnostic camera stream running")
+        state.log("Diagnostic camera stream running")
+
+        local_counter = 0
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                print("[DIAG] Stop requested")
+                break
+
+            ret, frame = cap.read()
+            if not ret:
+                print("[DIAG] Failed to read camera frame")
+                time.sleep(0.03)
+                continue
+
+            local_counter += 1
+            if local_counter <= 5 or local_counter % 30 == 0:
+                print(f"[DIAG] Captured frame #{local_counter} shape={frame.shape}")
+
+            frame = cv2.flip(frame, 1)
+            _update_latest_frame(frame)
+            time.sleep(0.01)
+
+        print("[DIAG] Camera stream stopped")
+    except Exception as e:
+        print(f"[DIAG] Camera stream error: {e}")
+        state.update(state="IDLE", message=f"Diagnostic stream error: {str(e)}")
+        state.log(f"Diagnostic stream error: {str(e)}")
+    finally:
+        cap.release()
+        stream_active = False
+        with latest_frame_lock:
+            latest_frame = None
 
 # ─── PRE-FLIGHT CHECKS ───────────────────────────────────────────────────
 
@@ -183,7 +266,7 @@ def _check_model_available():
 
 def _check_camera_available(device_index=0):
     """Verify the webcam can be opened and read a frame."""
-    cap = cv2.VideoCapture(device_index)
+    cap = _open_camera(device_index)
     if not cap.isOpened():
         state.update(state="IDLE", message="Camera not available. Close other apps and retry.")
         state.log("Camera not available (VideoCapture failed)")
@@ -210,6 +293,91 @@ def static_files(filename):
     """Serve static files."""
     return send_from_directory('static', filename)
 
+
+@app.route('/frame')
+def get_frame():
+    """Get the latest frame as a single JPEG image."""
+    with latest_frame_lock:
+        frame = latest_frame
+    
+    if frame is None:
+        print("[FRAME] /frame requested but latest_frame is empty")
+        # If no frame yet, return a placeholder from camera directly
+        try:
+            cap = _open_camera(0)
+            ret, img = cap.read()
+            cap.release()
+            if ret:
+                print("[FRAME] /frame fallback captured a direct camera frame")
+                success, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if success:
+                    return Response(
+                        buffer.tobytes(),
+                        mimetype='image/jpeg',
+                        headers={
+                            'Cache-Control': 'no-cache, no-store, must-revalidate',
+                            'Pragma': 'no-cache',
+                            'Expires': '0'
+                        }
+                    )
+        except:
+            pass
+        return Response(b'', 204)
+    
+    return Response(
+        frame,
+        mimetype='image/jpeg',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+    )
+
+@app.route('/test-frame')
+def test_frame():
+    """Generate a test frame for debugging."""
+    import numpy as np
+    # Create a simple test pattern
+    test_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    # Draw a green rectangle
+    test_img[100:380, 150:490] = [0, 255, 0]
+    # Add text
+    cv2.putText(test_img, 'TEST FRAME', (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    success, buffer = cv2.imencode('.jpg', test_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if success:
+        return Response(buffer.tobytes(), mimetype='image/jpeg')
+    return Response(b'', 204)
+
+@app.route('/camera-test')
+def camera_test():
+    """Test direct camera capture and store in latest_frame."""
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return jsonify({"success": False, "error": "Camera not accessible"})
+        
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            return jsonify({"success": False, "error": "Failed to read frame"})
+        
+        # Encode frame to JPEG
+        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not success:
+            return jsonify({"success": False, "error": "Frame encoding failed"})
+        
+        # Store in global latest_frame
+        with latest_frame_lock:
+            global latest_frame
+            latest_frame = buffer.tobytes()
+        
+        print("[CAMERA-TEST] Frame captured and stored successfully")
+        return jsonify({"success": True, "message": "Camera test successful"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 @app.route('/video_feed')
 def video_feed():
@@ -380,7 +548,7 @@ def extract_landmarks():
 
 # ─── API: Model Training ─────────────────────────────────────────────────
 
-def _train_model_worker(test_size, model_type='combined'):
+def _train_model_worker(test_size, model_type='static'):
     """Background worker for model training."""
     try:
         state.update(state="TRAINING", progress=0, message=f"Starting {model_type} model training...")
@@ -388,12 +556,9 @@ def _train_model_worker(test_size, model_type='combined'):
         if model_type == 'dynamic':
             state.log("Selected: BiLSTM for dynamic gestures")
             train_model(test_size=test_size)
-        elif model_type == 'phase1':
-            state.log("Selected: RandomForest for Phase 1 (digits 0-9 only)")
+        else:
+            state.log("Selected: RandomForest for unified static gestures")
             train_static_model(test_size=test_size)
-        else:  # 'combined' or default
-            state.log("Selected: RandomForest for Phase 2 (digits 0-9 + letters A-Z)")
-            train_combined_static_model(test_size=test_size)
         
         state.update(state="IDLE", progress=100, message="Model training complete")
         state.log("Model training completed successfully")
@@ -408,16 +573,16 @@ def train():
     Request JSON:
     {
         "test_size": 0.2,
-        "model_type": "combined"  // 'phase1', 'combined', or 'dynamic'
+        "model_type": "static"  // 'static' or 'dynamic'
     }
     """
     try:
         data = request.get_json()
         test_size = float(data.get('test_size', 0.2))
-        model_type = data.get('model_type', 'combined')  # 'phase1', 'combined', or 'dynamic'
+        model_type = data.get('model_type', 'static')  # 'static' or 'dynamic'
         
-        if model_type not in ['phase1', 'combined', 'dynamic']:
-            return jsonify({"error": "model_type must be 'phase1', 'combined', or 'dynamic'"}), 400
+        if model_type not in ['static', 'dynamic']:
+            return jsonify({"error": "model_type must be 'static' or 'dynamic'"}), 400
         
         if state.state != "IDLE":
             return jsonify({"error": f"System is currently {state.state}. Wait for it to finish."}), 409
@@ -449,6 +614,11 @@ def _stream_worker(mode, model_path, confidence_threshold, stop_event):
     try:
         state.update(state="RECOGNIZING", message=f"Starting {mode} mode...")
         state.log(f"Started real-time prediction in {mode} mode with model: {model_path}")
+        print(f"\n[STREAM] Starting {mode} mode with frame callback...")
+
+        if mode == "diagnostic":
+            _direct_camera_stream_worker(stop_event)
+            return
         
         if mode == "letter":
             predict_realtime(
@@ -491,11 +661,31 @@ def _stream_worker(mode, model_path, confidence_threshold, stop_event):
                 results_callback=_update_prediction_result
             )
         
+        print("[STREAM] Prediction stopped")
         state.update(state="IDLE", message="Recognition stopped")
         state.log("Prediction stopped")
     except Exception as e:
-        state.update(state="IDLE", message=f"Recognition error: {str(e)}")
-        state.log(f"Prediction error: {str(e)}")
+        print(f"[STREAM ERROR] {str(e)}")
+        error_text = str(e)
+        state.log(f"Prediction error: {error_text}")
+
+        tf_runtime_error = (
+            "Failed to load the native TensorFlow runtime" in error_text
+            or "DLL load failed while importing _pywrap_tensorflow_internal" in error_text
+            or "tensorflow" in error_text.lower()
+        )
+
+        if tf_runtime_error:
+            state.update(state="RECOGNIZING", message="TensorFlow init failed. Falling back to diagnostic camera stream...")
+            state.log("TensorFlow runtime failure detected. Starting diagnostic camera fallback.")
+            try:
+                _direct_camera_stream_worker(stop_event)
+                return
+            except Exception as fallback_error:
+                print(f"[STREAM FALLBACK ERROR] {str(fallback_error)}")
+                state.log(f"Diagnostic fallback error: {str(fallback_error)}")
+
+        state.update(state="IDLE", message=f"Recognition error: {error_text}")
     finally:
         stream_active = False
 
@@ -506,7 +696,7 @@ def start_stream():
     Request JSON:
     {
         "mode": "letter",  // letter, word, sentence, stable
-        "model_path": "models/static_classifier_full.pkl",  // optional, defaults to phase 2 model
+        "model_path": "models/static_classifier.pkl",  // optional, defaults to static model
         "confidence_threshold": 0.7
     }
     """
@@ -519,11 +709,12 @@ def start_stream():
             return jsonify({"error": f"System is currently {state.state}. Wait for it to finish."}), 409
         
         data = request.get_json()
-        mode = data.get('mode', 'letter')  # letter, word, sentence, stable
-        model_path = data.get('model_path', 'models/static_classifier_full.pkl')  # Phase 2 by default
+        mode = data.get('mode', 'letter')  # letter, word, sentence, stable, diagnostic
+        model_path = data.get('model_path', 'models/static_classifier.pkl')
         confidence_threshold = float(data.get('confidence_threshold', 0.7))
+        print(f"[STREAM] start requested mode={mode} model_path={model_path} confidence={confidence_threshold}")
 
-        if not _check_model_available():
+        if mode != 'diagnostic' and not _check_model_available():
             return jsonify({"error": "Model not found. Run extraction + training first."}), 409
 
         if not _check_camera_available():
@@ -547,6 +738,39 @@ def start_stream():
     except Exception as e:
         stream_active = False
         state.log(f"Error starting stream: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/stream/diagnostic/start', methods=['POST'])
+def start_diagnostic_stream():
+    """Start a camera-only diagnostic stream that bypasses inference."""
+    global stream_active, stream_thread, stream_stop_event
+    try:
+        if stream_active:
+            return jsonify({"error": "Stream is already running"}), 409
+
+        if state.state != "IDLE":
+            return jsonify({"error": f"System is currently {state.state}. Wait for it to finish."}), 409
+
+        if not _check_camera_available():
+            return jsonify({"error": "Camera not available. Close other apps and retry."}), 409
+
+        stream_active = True
+        stream_stop_event = threading.Event()
+        stream_thread = threading.Thread(
+            target=_stream_worker,
+            args=("diagnostic", None, 0.0, stream_stop_event),
+            daemon=True
+        )
+        stream_thread.start()
+
+        return jsonify({
+            "success": True,
+            "message": "Started diagnostic camera stream",
+            "mode": "diagnostic"
+        })
+    except Exception as e:
+        stream_active = False
+        state.log(f"Error starting diagnostic stream: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/stream/stop', methods=['POST'])

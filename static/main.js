@@ -99,9 +99,11 @@ const elements = {
 let appState = {
     systemState: 'IDLE',
     isStreaming: false,
+    isConnected: false,
     statusPollTimer: null,
     logsPollTimer: null,
-    lastTranslation: ''
+    lastTranslation: '',
+    frameRefreshInterval: null
 };
 
 // ─── INITIALIZATION ──────────────────────────────────────────────────────
@@ -446,11 +448,37 @@ async function startStream() {
         if (elements.stopStreamBtn) elements.stopStreamBtn.disabled = false;
 
         if (elements.cameraStream) {
-            elements.cameraStream.src = `/video_feed?ts=${Date.now()}`;
+            console.log('[STREAM] Camera element found, setting up display');
+            console.log('[STREAM] Elements:', {
+                cameraStream: !!elements.cameraStream,
+                cameraPlaceholder: !!elements.cameraPlaceholder,
+                hasHidden: elements.cameraStream.classList.contains('hidden')
+            });
+            
+            // Set up error/load handlers
+            elements.cameraStream.addEventListener('error', () => {
+                console.error('[CAM] Image failed to load');
+            });
+            
+            elements.cameraStream.addEventListener('load', () => {
+                console.log('[CAM] Image loaded successfully');
+            });
+            
+            // Use MJPEG streaming for smoother playback
+            const streamUrl = `/video_feed?t=${performance.now()}`;
+            console.log('[STREAM] Setting image src to:', streamUrl);
+            elements.cameraStream.src = streamUrl;
+            
+            // Then remove hidden class
             elements.cameraStream.classList.remove('hidden');
-        }
-        if (elements.cameraPlaceholder) {
-            elements.cameraPlaceholder.classList.add('hidden');
+            console.log('[STREAM] Removed hidden class, new classes:', elements.cameraStream.className);
+            
+            // Hide placeholder
+            if (elements.cameraPlaceholder) {
+                elements.cameraPlaceholder.classList.add('hidden');
+            }
+        } else {
+            console.error('[STREAM] Camera element NOT found!');
         }
 
     } catch (error) {
@@ -499,6 +527,12 @@ async function updateStatus() {
         const response = await fetch(`${API_BASE}/status`);
         const data = await response.json();
 
+        // Update connection status
+        if (!appState.isConnected) {
+            appState.isConnected = true;
+            updateConnectionStatus(true);
+        }
+
         // Update system state
         appState.systemState = data.state;
         updateStatusIndicator(data.state);
@@ -515,7 +549,25 @@ async function updateStatus() {
 
     } catch (error) {
         console.error('Error polling status:', error);
+        if (appState.isConnected) {
+            appState.isConnected = false;
+            updateConnectionStatus(false);
+        }
     }
+}
+
+function updateConnectionStatus(isConnected) {
+    // Update all status elements
+    const statusElements = document.querySelectorAll('.brand-note, .panel-status-text, .side-status span:last-child');
+    statusElements.forEach(el => {
+        if (el.textContent.includes('Offline') || el.textContent.includes('Online')) {
+            el.textContent = isConnected ? 'Online' : 'Offline';
+            if (el.classList) {
+                el.classList.toggle('offline', !isConnected);
+                el.classList.toggle('online', isConnected);
+            }
+        }
+    });
 }
 
 function updateStatusIndicator(state) {

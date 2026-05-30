@@ -5,7 +5,6 @@ using MediaPipe Hands solution.
 """
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 
@@ -25,6 +24,8 @@ class HandDetector:
             min_detection_confidence (float): Minimum confidence for hand detection
             min_tracking_confidence (float): Minimum confidence for hand tracking
         """
+        import mediapipe as mp
+
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles

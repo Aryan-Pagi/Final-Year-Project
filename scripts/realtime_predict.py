@@ -26,6 +26,16 @@ from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_e
 from utils.word_builder import WordBuilder, is_word_label
 
 
+def _open_camera(device_index=0):
+    """Open the webcam with a Windows-friendly backend fallback."""
+    if os.name == 'nt':
+        cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(device_index)
+
+
 def _dedupe_consecutive_words(text):
     """Remove consecutive duplicate words: 'YOU YOU HELP' -> 'YOU HELP'."""
     words = text.split()
@@ -243,7 +253,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print(f"{'='*60}\n")
     
     # Initialize webcam
-    cap = cv2.VideoCapture(0)
+    cap = _open_camera(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     
@@ -268,12 +278,16 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     history_size = 7
     
     print("Webcam started. Showing predictions...\n")
+    loop_counter = 0
     
     while True:
         if stop_event is not None and stop_event.is_set():
             print("\nStop requested. Exiting real-time prediction...")
             break
+        loop_counter += 1
         ret, frame = cap.read()
+        if loop_counter <= 5 or loop_counter % 30 == 0:
+            print(f"[PRED] loop={loop_counter} cap.read ret={ret} frame_shape={getattr(frame, 'shape', None)}")
         
         if not ret:
             print("Error: Failed to capture frame.")
@@ -408,7 +422,11 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                            color=(255, 255, 255), thickness=1)
         
         if frame_callback is not None:
+            if loop_counter <= 5 or loop_counter % 30 == 0:
+                print(f"[PRED] loop={loop_counter} calling frame_callback")
             frame_callback(frame)
+            if loop_counter <= 5 or loop_counter % 30 == 0:
+                print(f"[PRED] loop={loop_counter} frame_callback complete")
 
         if display:
             # Show the frame
@@ -494,7 +512,7 @@ def predict_words(model_path='models/gesture_model.pkl',
     print(f"{'='*60}\n")
 
     # Initialize webcam
-    cap = cv2.VideoCapture(0)
+    cap = _open_camera(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -747,7 +765,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("  - BACKSPACE=delete  |  C=clear  |  Q=quit")
     print(f"{'='*60}\n")
 
-    cap = cv2.VideoCapture(0)
+    cap = _open_camera(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -1082,7 +1100,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     flash_until = 0.0
 
     # ── Webcam ───────────────────────────────────────────────────────────────
-    cap = cv2.VideoCapture(0)
+    cap = _open_camera(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 

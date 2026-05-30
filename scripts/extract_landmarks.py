@@ -14,7 +14,13 @@ from tqdm import tqdm
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import HandDetector, compute_engineered_features, get_engineered_feature_names
+from utils.mediapipe_utils import (
+    HandDetector,
+    aspect_aware_padding,
+    compute_engineered_features,
+    compute_hand_bounding_box,
+    get_engineered_feature_names,
+)
 
 
 # Number of base engineered features per single frame
@@ -25,25 +31,163 @@ UNIFIED_FEATURES = _BASE_FEATURES * 2
 # Maximum sequence length for BiLSTM training (frames per clip)
 MAX_SEQ_FRAMES = 30
 
+MIN_IMAGE_DIMENSION = 96
+MIN_LAPLACIAN_VARIANCE = 18.0
+MIN_BRIGHTNESS = 28.0
+MAX_BRIGHTNESS = 235.0
+MIN_CONTRAST = 12.0
+MIN_HAND_AREA_RATIO = 0.008
+MAX_HAND_AREA_RATIO = 0.75
+MIN_COVERAGE_RATIO = 0.90
+MIN_HAND_CONFIDENCE = 0.45
+MAX_RETRY_CANDIDATES = 6
 
-def _frame_feature(detector, image, use_normalized):
-    """Extract engineered features from a single image, returns None on failure."""
-    enhanced = cv2.convertScaleAbs(image, alpha=1.5, beta=50)
-    _, results = detector.find_hands(enhanced, draw=False)
+
+def _image_quality_metrics(image):
+    """Return inexpensive quality signals used to guide preprocessing retries."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    return {
+        'height': height,
+        'width': width,
+        'min_dim': min(height, width),
+        'brightness': float(gray.mean()),
+        'contrast': float(gray.std()),
+        'blur': float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+    }
+
+
+def _enhance_image(image):
+    """Build a small set of recoverable preprocessing variants."""
+    variants = []
+
+    variants.append(('original', image))
+    variants.append(('letterbox', aspect_aware_padding(image)[0]))
+    variants.append(('bright_contrast', cv2.convertScaleAbs(image, alpha=1.25, beta=25)))
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_channel = clahe.apply(l_channel)
+    clahe_image = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+    variants.append(('clahe', clahe_image))
+
+    denoised = cv2.fastNlMeansDenoisingColored(image, None, 5, 5, 7, 21)
+    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    sharpened = cv2.filter2D(denoised, -1, sharpen_kernel)
+    variants.append(('denoised_sharpened', sharpened))
+
+    upscaled = cv2.resize(image, None, fx=1.35, fy=1.35, interpolation=cv2.INTER_CUBIC)
+    variants.append(('upscaled', upscaled))
+
+    return variants[:MAX_RETRY_CANDIDATES]
+
+
+def _hand_detection_stats(results, raw_landmarks):
+    """Compute confidence and coverage checks for a detected hand."""
+    if results.multi_handedness and len(results.multi_handedness) > 0:
+        confidence = float(results.multi_handedness[0].classification[0].score)
+    else:
+        confidence = 0.0
+
+    coverage_ratio = 0.0
+    bbox = None
+    if raw_landmarks is not None:
+        bbox = compute_hand_bounding_box(raw_landmarks)
+        if bbox is not None:
+            points = raw_landmarks.reshape(21, 3)
+            inside_x = np.logical_and(points[:, 0] >= 0.0, points[:, 0] <= 1.0)
+            inside_y = np.logical_and(points[:, 1] >= 0.0, points[:, 1] <= 1.0)
+            coverage_ratio = float(np.mean(np.logical_and(inside_x, inside_y)))
+
+    return confidence, coverage_ratio, bbox
+
+
+def _crop_around_hand(image, raw_landmarks, padding=0.30):
+    """Crop around the detected hand while keeping a safety margin."""
+    if raw_landmarks is None:
+        return image
+
+    bbox = compute_hand_bounding_box(raw_landmarks)
+    if bbox is None:
+        return image
+
+    height, width = image.shape[:2]
+    x_min = max(0, int((bbox['x_min'] - padding) * width))
+    y_min = max(0, int((bbox['y_min'] - padding) * height))
+    x_max = min(width, int((bbox['x_max'] + padding) * width))
+    y_max = min(height, int((bbox['y_max'] + padding) * height))
+
+    if x_max <= x_min or y_max <= y_min:
+        return image
+
+    return image[y_min:y_max, x_min:x_max]
+
+
+def _extract_from_image(detector, image, use_normalized):
+    """Extract landmarks from one image variant and validate quality."""
+    _, results = detector.find_hands(image, draw=False)
+    raw_landmarks = detector.extract_landmarks(results)
+    if raw_landmarks is None:
+        return None, None, None
+
+    confidence, coverage_ratio, bbox = _hand_detection_stats(results, raw_landmarks)
+    if confidence < MIN_HAND_CONFIDENCE:
+        return None, None, None
+    if coverage_ratio < MIN_COVERAGE_RATIO:
+        return None, None, None
+
+    if bbox is not None:
+        area_ratio = bbox['area']
+        if area_ratio < MIN_HAND_AREA_RATIO or area_ratio > MAX_HAND_AREA_RATIO:
+            return None, None, None
+        if bbox['x_min'] < -0.03 or bbox['y_min'] < -0.03 or bbox['x_max'] > 1.03 or bbox['y_max'] > 1.03:
+            return None, None, None
+
     landmarks = (
-        detector.extract_landmarks_normalized(results, enhanced.shape)
-        if use_normalized else
-        detector.extract_landmarks(results)
+        detector.extract_landmarks_normalized(results, image.shape)
+        if use_normalized else raw_landmarks
     )
     if landmarks is None:
-        _, results = detector.find_hands(image, draw=False)
-        landmarks = (
-            detector.extract_landmarks_normalized(results, image.shape)
-            if use_normalized else
-            detector.extract_landmarks(results)
-        )
-    if landmarks is not None:
-        return compute_engineered_features(landmarks)
+        return None, None, None
+
+    return landmarks, raw_landmarks, results
+
+
+def _frame_feature(detector, image, use_normalized):
+    """Extract engineered features from a single image, with recovery retries."""
+    if image is None:
+        return None
+
+    quality = _image_quality_metrics(image)
+    if quality['min_dim'] < MIN_IMAGE_DIMENSION:
+        image = cv2.resize(image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        quality = _image_quality_metrics(image)
+
+    candidates = _enhance_image(image)
+    if quality['brightness'] < MIN_BRIGHTNESS or quality['brightness'] > MAX_BRIGHTNESS:
+        candidates = candidates[1:] + candidates[:1]
+    elif quality['contrast'] < MIN_CONTRAST or quality['blur'] < MIN_LAPLACIAN_VARIANCE:
+        candidates = candidates[1:] + candidates[:1]
+
+    for _, candidate in candidates:
+        landmarks, raw_landmarks, _ = _extract_from_image(detector, candidate, use_normalized)
+        if landmarks is not None:
+            return compute_engineered_features(landmarks)
+
+        _, results = detector.find_hands(candidate, draw=False)
+        raw_candidate = detector.extract_landmarks(results)
+        if raw_candidate is None:
+            continue
+
+        cropped = _crop_around_hand(candidate, raw_candidate)
+        if cropped is candidate or cropped.size == 0:
+            continue
+
+        landmarks, _, _ = _extract_from_image(detector, cropped, use_normalized)
+        if landmarks is not None:
+            return compute_engineered_features(landmarks)
+
     return None
 
 
@@ -54,7 +198,7 @@ def _clip_to_feature(detector, clip_dir, use_normalized):
     Returns None if no frames yielded landmarks.
     """
     frame_files = sorted(
-        [f for f in os.listdir(clip_dir) if f.lower().endswith('.jpg')],
+        [f for f in os.listdir(clip_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))],
         key=lambda x: int(x.split('_')[1].split('.')[0]) if '_' in x else 0
     )
     per_frame = []
@@ -92,7 +236,7 @@ def _clip_to_sequence(detector, clip_dir, use_normalized):
     (MAX_SEQ_FRAMES, _BASE_FEATURES).  Returns None if no frames yielded landmarks.
     """
     frame_files = sorted(
-        [f for f in os.listdir(clip_dir) if f.lower().endswith('.jpg')],
+        [f for f in os.listdir(clip_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))],
         key=lambda x: int(x.split('_')[1].split('.')[0]) if '_' in x else 0
     )
     per_frame = []
@@ -308,7 +452,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
     print()
 
 
-def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
+def extract_sequences_from_dataset(dataset_path='dataset/raw_clips',
                                    output_npz='dataset/sequences.npz',
                                    use_normalized=True,
                                    target_labels=None,
@@ -443,40 +587,32 @@ def main():
     print("ISL Gesture Recognition - Landmark Extraction")
     print("="*60)
 
-    print("\nExtraction mode:")
-    print("  1) Sequence (.npz) — for Bidirectional LSTM  [default]")
-    print("  2) Flat CSV        — for Random Forest / legacy models")
-    mode_choice = input("Choose mode (1/2, default 1): ").strip()
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    raw_images_path = os.path.join(script_dir, 'dataset', 'raw_images')
+    raw_clips_path = os.path.join(script_dir, 'dataset', 'raw_clips')
 
-    print("\nLabel Scope:")
-    print("  1) All labels in dataset")
-    print("  2) Digits only (0-9)")
-    scope_choice = input("Choose scope (1/2, default 2): ").strip() or "2"
-    target_labels = [str(i) for i in range(10)] if scope_choice == "2" else None
+    ran_anything = False
 
-    max_samples_input = input("Cap samples per label (e.g., 100, or leave blank for no cap): ").strip()
-    max_samples_per_label = None
-    if max_samples_input:
-        try:
-            max_samples_per_label = int(max_samples_input)
-            if max_samples_per_label <= 0:
-                print("Warning: Max samples must be positive. No cap applied.")
-                max_samples_per_label = None
-        except ValueError:
-            print("Warning: Invalid input for max samples. No cap applied.")
+    if os.path.exists(raw_images_path):
+        print("\nStatic dataset detected. Extracting landmarks from dataset/raw_images/...")
+        extract_landmarks_from_dataset(
+            dataset_path='dataset/raw_images',
+            output_csv='dataset/landmarks.csv',
+            use_normalized=True,
+        )
+        ran_anything = True
 
-    normalize_choice = input("Use normalized landmarks? (Y/n): ").strip().lower()
-    use_normalized = normalize_choice != 'n'
+    if os.path.exists(raw_clips_path):
+        print("\nDynamic dataset detected. Extracting sequences from dataset/raw_clips/...")
+        extract_sequences_from_dataset(
+            dataset_path='dataset/raw_clips',
+            output_npz='dataset/sequences.npz',
+            use_normalized=True,
+        )
+        ran_anything = True
 
-    if use_normalized:
-        print("Using normalized landmarks (recommended)")
-    else:
-        print("Using raw landmarks")
-
-    if mode_choice == '2':
-        extract_landmarks_from_dataset(use_normalized=use_normalized, target_labels=target_labels, max_samples_per_label=max_samples_per_label)
-    else:
-        extract_sequences_from_dataset(use_normalized=use_normalized, target_labels=target_labels, max_samples_per_label=max_samples_per_label)
+    if not ran_anything:
+        print("Error: No dataset folders found. Create dataset/raw_images/ or dataset/raw_clips/ first.")
 
 
 if __name__ == "__main__":
