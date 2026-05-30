@@ -43,6 +43,31 @@ MIN_HAND_CONFIDENCE = 0.45
 MAX_RETRY_CANDIDATES = 6
 
 
+def _two_hand_feature_vector(detector, image, use_normalized):
+    """Extract up to two hands from one image and concatenate engineered features."""
+    _, results = detector.find_hands(image, draw=False)
+    if use_normalized:
+        hand_landmarks = detector.extract_landmarks_normalized(results, image.shape, hand_index=None)
+    else:
+        hand_landmarks = detector.extract_landmarks(results, hand_index=None)
+
+    if not hand_landmarks:
+        return None
+
+    if not isinstance(hand_landmarks, list):
+        hand_landmarks = [hand_landmarks]
+
+    hand_features = [compute_engineered_features(np.asarray(hand, dtype=np.float32))
+                     for hand in hand_landmarks[:2]]
+    if not hand_features:
+        return None
+
+    while len(hand_features) < 2:
+        hand_features.append(np.zeros(_BASE_FEATURES, dtype=np.float32))
+
+    return np.concatenate(hand_features)
+
+
 def _image_quality_metrics(image):
     """Return inexpensive quality signals used to guide preprocessing retries."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -154,7 +179,7 @@ def _extract_from_image(detector, image, use_normalized):
     return landmarks, raw_landmarks, results
 
 
-def _frame_feature(detector, image, use_normalized):
+def _frame_feature(detector, image, use_normalized, combine_two_hands=False):
     """Extract engineered features from a single image, with recovery retries."""
     if image is None:
         return None
@@ -169,6 +194,13 @@ def _frame_feature(detector, image, use_normalized):
         candidates = candidates[1:] + candidates[:1]
     elif quality['contrast'] < MIN_CONTRAST or quality['blur'] < MIN_LAPLACIAN_VARIANCE:
         candidates = candidates[1:] + candidates[:1]
+
+    if combine_two_hands:
+        for _, candidate in candidates:
+            feat = _two_hand_feature_vector(detector, candidate, use_normalized)
+            if feat is not None:
+                return feat
+        return None
 
     for _, candidate in candidates:
         landmarks, raw_landmarks, _ = _extract_from_image(detector, candidate, use_normalized)
@@ -218,14 +250,13 @@ def _clip_to_feature(detector, clip_dir, use_normalized):
 
 def _static_to_feature(detector, image, use_normalized):
     """
-    Process a single static image and return a unified feature vector of
-    length UNIFIED_FEATURES (feature values + zeros for the std half).
+    Process a single static image and return a two-hand feature vector of
+    length UNIFIED_FEATURES (one engineered vector per hand).
     """
-    feat = _frame_feature(detector, image, use_normalized)
+    feat = _frame_feature(detector, image, use_normalized, combine_two_hands=True)
     if feat is None:
         return None
-    # Pad with zeros for the std half so vector length matches clips
-    return np.concatenate([feat, np.zeros(_BASE_FEATURES)])
+    return feat
 
 
 # ── Sequence extraction helpers (for BiLSTM) ─────────────────────────────────

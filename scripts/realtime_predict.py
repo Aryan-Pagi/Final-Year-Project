@@ -130,6 +130,31 @@ def _fit_feature_size(features, expected_size):
     return features[:expected_size]
 
 
+def _extract_two_hand_features(detector, results, frame_shape, use_normalized):
+    """Extract engineered features for up to two hands and concatenate them."""
+    if use_normalized:
+        hand_landmarks = detector.extract_landmarks_normalized(results, frame_shape, hand_index=None)
+    else:
+        hand_landmarks = detector.extract_landmarks(results, hand_index=None)
+
+    if not hand_landmarks:
+        return None
+
+    if not isinstance(hand_landmarks, list):
+        hand_landmarks = [hand_landmarks]
+
+    hand_features = [compute_engineered_features(np.asarray(lm, dtype=np.float32))
+                     for lm in hand_landmarks[:2]]
+    if not hand_features:
+        return None
+
+    feature_size = hand_features[0].shape[0]
+    while len(hand_features) < 2:
+        hand_features.append(np.zeros(feature_size, dtype=np.float32))
+
+    return np.concatenate(hand_features)
+
+
 def normalize_sentence_text(text, add_terminal_punctuation=False):
     """Light cleanup for recognized text before display/printing."""
     if not text:
@@ -396,20 +421,21 @@ def predict_realtime(model_path=None,
         
         # Predict gesture if hand is detected
         if landmarks is not None:
-            # Apply feature engineering if model expects it
-            if uses_engineered:
-                landmarks = compute_engineered_features(landmarks)
-
             if is_random_forest:
                 # Static gesture prediction using RandomForest
                 # Reshape single feature vector for sklearn model
-                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
+                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
+                if features is None:
+                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
+                features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
+                if uses_engineered:
+                    landmarks = compute_engineered_features(landmarks)
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -431,6 +457,8 @@ def predict_realtime(model_path=None,
                 confidence = prediction_proba[prediction]
                 predicted_label = label_encoder.inverse_transform([prediction])[0]
             else:
+                if uses_engineered:
+                    landmarks = compute_engineered_features(landmarks)
                 landmarks_reshaped = landmarks.reshape(1, -1)
                 prediction = model.predict(landmarks_reshaped)[0]
                 prediction_proba = model.predict_proba(landmarks_reshaped)[0]
@@ -637,18 +665,20 @@ def predict_words(model_path=None,
         confidence = 0.0
 
         if landmarks is not None:
-            if uses_engineered:
-                landmarks = compute_engineered_features(landmarks)
-
             if is_random_forest:
                 # Static gesture prediction using RandomForest
-                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
+                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
+                if features is None:
+                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
+                features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
+                if uses_engineered:
+                    landmarks = compute_engineered_features(landmarks)
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -892,18 +922,20 @@ def predict_sentence(model_path=None,
 
         if landmarks is not None:
             no_hand_since = None  # hand is present — reset absence timer
-            if uses_engineered:
-                landmarks = compute_engineered_features(landmarks)
-
             if is_random_forest:
                 # Static gesture prediction using RandomForest
-                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
+                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
+                if features is None:
+                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
+                features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
+                if uses_engineered:
+                    landmarks = compute_engineered_features(landmarks)
                 seq_buffer.append(landmarks.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
@@ -1226,20 +1258,22 @@ def predict_stable_sentence(model_path=None,
 
         if landmarks is not None:
             # ── Step 2: feature engineering + unified mode ────────────────────
-            if uses_engineered:
-                landmarks = compute_engineered_features(landmarks)
-            
             # ── Step 3: model prediction ──────────────────────────────────────
             try:
                 if is_random_forest:
                     # Static gesture prediction using RandomForest
-                    features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
+                    features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
+                    if features is None:
+                        features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
+                    features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                     raw_prediction = model.predict(features)[0]
                     predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                     probabilities = model.predict_proba(features)[0]
                     class_idx = _prediction_class_index(raw_prediction, label_encoder)
                     confidence = float(probabilities[class_idx])
                 elif unified_mode:
+                    if uses_engineered:
+                        landmarks = compute_engineered_features(landmarks)
                     feat_window.append((now, landmarks))
                     while feat_window and (now - feat_window[0][0]) > TIME_WINDOW:
                         feat_window.popleft()
@@ -1250,6 +1284,8 @@ def predict_stable_sentence(model_path=None,
                     confidence = prob[pred_enc]
                     predicted_label = label_encoder.inverse_transform([pred_enc])[0]
                 else:
+                    if uses_engineered:
+                        landmarks = compute_engineered_features(landmarks)
                     pred_enc = model.predict(landmarks.reshape(1, -1))[0]
                     prob = model.predict_proba(landmarks.reshape(1, -1))[0]
                     confidence = prob[pred_enc]

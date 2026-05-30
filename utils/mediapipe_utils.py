@@ -120,6 +120,61 @@ class HandDetector:
                 )
         
         return frame, results
+
+    def _hand_landmarks_to_array(self, hand_landmarks, normalize=False):
+        """Convert one detected hand into a flattened landmark array."""
+        landmarks = []
+        if not normalize:
+            for landmark in hand_landmarks.landmark:
+                landmarks.extend([landmark.x, landmark.y, landmark.z])
+            return np.array(landmarks)
+
+        x_coords = [landmark.x for landmark in hand_landmarks.landmark]
+        y_coords = [landmark.y for landmark in hand_landmarks.landmark]
+        x_min, x_max = min(x_coords), max(x_coords)
+        y_min, y_max = min(y_coords), max(y_coords)
+
+        for landmark in hand_landmarks.landmark:
+            if x_max - x_min > 0:
+                norm_x = (landmark.x - x_min) / (x_max - x_min)
+            else:
+                norm_x = 0.5
+
+            if y_max - y_min > 0:
+                norm_y = (landmark.y - y_min) / (y_max - y_min)
+            else:
+                norm_y = 0.5
+
+            landmarks.extend([norm_x, norm_y, landmark.z])
+
+        return np.array(landmarks)
+
+    def _ordered_hand_landmarks(self, results):
+        """Return detected hands in a stable left/right order when available."""
+        if not results.multi_hand_landmarks:
+            return []
+
+        ordered_hands = []
+        handedness = getattr(results, 'multi_handedness', None) or []
+        for index, hand_landmarks in enumerate(results.multi_hand_landmarks):
+            label = None
+            score = None
+            if index < len(handedness):
+                classification = handedness[index].classification
+                if classification:
+                    label = classification[0].label
+                    score = classification[0].score
+
+            order_key = 2
+            if label == 'Left':
+                order_key = 0
+            elif label == 'Right':
+                order_key = 1
+
+            ordered_hands.append((order_key, index, score, hand_landmarks))
+
+        ordered_hands.sort(key=lambda item: (item[0], item[1]))
+        return [hand_landmarks for _, _, _, hand_landmarks in ordered_hands]
     
     def extract_landmarks(self, results, hand_index=0):
         """
@@ -133,16 +188,14 @@ class HandDetector:
             numpy.ndarray or None: Flattened array of landmarks (21 landmarks * 3 coords = 63 values)
                                     or None if no hand detected
         """
+        if hand_index is None:
+            return self.extract_all_landmarks(results)
+
         if results.multi_hand_landmarks and len(results.multi_hand_landmarks) > hand_index:
             # Get the specified hand's landmarks
             hand_landmarks = results.multi_hand_landmarks[hand_index]
-            
-            # Extract x, y, z coordinates for all 21 landmarks
-            landmarks = []
-            for landmark in hand_landmarks.landmark:
-                landmarks.extend([landmark.x, landmark.y, landmark.z])
-            
-            return np.array(landmarks)
+
+            return self._hand_landmarks_to_array(hand_landmarks)
         
         return None
     
@@ -157,12 +210,8 @@ class HandDetector:
             list: List of numpy arrays, one for each detected hand
         """
         all_hands = []
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                landmarks = []
-                for landmark in hand_landmarks.landmark:
-                    landmarks.extend([landmark.x, landmark.y, landmark.z])
-                all_hands.append(np.array(landmarks))
+        for hand_landmarks in self._ordered_hand_landmarks(results):
+            all_hands.append(self._hand_landmarks_to_array(hand_landmarks))
         
         return all_hands if all_hands else None
     
@@ -193,38 +242,13 @@ class HandDetector:
         Returns:
             numpy.ndarray or None: Normalized flattened array of landmarks
         """
+        if hand_index is None:
+            return self.extract_all_landmarks_normalized(results, frame_shape)
+
         if results.multi_hand_landmarks and len(results.multi_hand_landmarks) > hand_index:
             hand_landmarks = results.multi_hand_landmarks[hand_index]
-            
-            # Extract all coordinates
-            landmarks = []
-            x_coords = []
-            y_coords = []
-            
-            for landmark in hand_landmarks.landmark:
-                x_coords.append(landmark.x)
-                y_coords.append(landmark.y)
-            
-            # Find min and max to normalize relative to hand bounding box
-            x_min, x_max = min(x_coords), max(x_coords)
-            y_min, y_max = min(y_coords), max(y_coords)
-            
-            # Normalize coordinates relative to bounding box
-            for landmark in hand_landmarks.landmark:
-                # Normalize x and y to be relative to hand bounding box
-                if x_max - x_min > 0:
-                    norm_x = (landmark.x - x_min) / (x_max - x_min)
-                else:
-                    norm_x = 0.5
-                
-                if y_max - y_min > 0:
-                    norm_y = (landmark.y - y_min) / (y_max - y_min)
-                else:
-                    norm_y = 0.5
-                
-                landmarks.extend([norm_x, norm_y, landmark.z])
-            
-            return np.array(landmarks)
+
+            return self._hand_landmarks_to_array(hand_landmarks, normalize=True)
         
         return None
     
@@ -240,35 +264,8 @@ class HandDetector:
             list: List of normalized numpy arrays, one for each detected hand
         """
         all_hands = []
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                landmarks = []
-                x_coords = []
-                y_coords = []
-                
-                for landmark in hand_landmarks.landmark:
-                    x_coords.append(landmark.x)
-                    y_coords.append(landmark.y)
-                
-                # Find min and max to normalize relative to hand bounding box
-                x_min, x_max = min(x_coords), max(x_coords)
-                y_min, y_max = min(y_coords), max(y_coords)
-                
-                # Normalize coordinates relative to bounding box
-                for landmark in hand_landmarks.landmark:
-                    if x_max - x_min > 0:
-                        norm_x = (landmark.x - x_min) / (x_max - x_min)
-                    else:
-                        norm_x = 0.5
-                    
-                    if y_max - y_min > 0:
-                        norm_y = (landmark.y - y_min) / (y_max - y_min)
-                    else:
-                        norm_y = 0.5
-                    
-                    landmarks.extend([norm_x, norm_y, landmark.z])
-                
-                all_hands.append(np.array(landmarks))
+        for hand_landmarks in self._ordered_hand_landmarks(results):
+            all_hands.append(self._hand_landmarks_to_array(hand_landmarks, normalize=True))
         
         return all_hands if all_hands else None
     
