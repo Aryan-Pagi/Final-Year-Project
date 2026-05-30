@@ -115,6 +115,21 @@ def _prediction_class_index(prediction, label_encoder):
     return int(label_encoder.transform([prediction])[0])
 
 
+def _fit_feature_size(features, expected_size):
+    """Pad or trim a feature vector to the expected model width."""
+    if features is None or expected_size is None:
+        return features
+
+    expected_size = int(expected_size)
+    current_size = int(features.size)
+    if current_size == expected_size:
+        return features
+    if current_size < expected_size:
+        padding = np.zeros(expected_size - current_size, dtype=features.dtype)
+        return np.concatenate([features, padding])
+    return features[:expected_size]
+
+
 def normalize_sentence_text(text, add_terminal_punctuation=False):
     """Light cleanup for recognized text before display/printing."""
     if not text:
@@ -388,7 +403,7 @@ def predict_realtime(model_path=None,
             if is_random_forest:
                 # Static gesture prediction using RandomForest
                 # Reshape single feature vector for sklearn model
-                features = landmarks.reshape(1, -1)
+                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
@@ -627,7 +642,7 @@ def predict_words(model_path=None,
 
             if is_random_forest:
                 # Static gesture prediction using RandomForest
-                features = landmarks.reshape(1, -1)
+                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
@@ -882,7 +897,7 @@ def predict_sentence(model_path=None,
 
             if is_random_forest:
                 # Static gesture prediction using RandomForest
-                features = landmarks.reshape(1, -1)
+                features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
@@ -1218,7 +1233,7 @@ def predict_stable_sentence(model_path=None,
             try:
                 if is_random_forest:
                     # Static gesture prediction using RandomForest
-                    features = landmarks.reshape(1, -1)
+                    features = _fit_feature_size(landmarks, model_meta.get('feature_size')).reshape(1, -1)
                     raw_prediction = model.predict(features)[0]
                     predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                     probabilities = model.predict_proba(features)[0]
