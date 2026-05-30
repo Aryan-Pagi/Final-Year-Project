@@ -98,6 +98,23 @@ def _normalize_pronoun_i(text):
     return re.sub(r"\bi\b", "I", text)
 
 
+def _decode_prediction_label(prediction, label_encoder):
+    """Convert encoded model outputs back into the original label string when needed."""
+    if label_encoder is not None and isinstance(prediction, (int, np.integer)):
+        try:
+            return label_encoder.inverse_transform([int(prediction)])[0]
+        except Exception:
+            return prediction
+    return prediction
+
+
+def _prediction_class_index(prediction, label_encoder):
+    """Return the index used by predict_proba for a model prediction."""
+    if isinstance(prediction, (int, np.integer)):
+        return int(prediction)
+    return int(label_encoder.transform([prediction])[0])
+
+
 def normalize_sentence_text(text, add_terminal_punctuation=False):
     """Light cleanup for recognized text before display/printing."""
     if not text:
@@ -372,9 +389,10 @@ def predict_realtime(model_path=None,
                 # Static gesture prediction using RandomForest
                 # Reshape single feature vector for sklearn model
                 features = landmarks.reshape(1, -1)
-                predicted_label = model.predict(features)[0]
+                raw_prediction = model.predict(features)[0]
+                predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
-                class_idx = label_encoder.transform([predicted_label])[0]
+                class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
@@ -610,9 +628,10 @@ def predict_words(model_path=None,
             if is_random_forest:
                 # Static gesture prediction using RandomForest
                 features = landmarks.reshape(1, -1)
-                predicted_label = model.predict(features)[0]
+                raw_prediction = model.predict(features)[0]
+                predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
-                class_idx = label_encoder.transform([predicted_label])[0]
+                class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
@@ -864,9 +883,10 @@ def predict_sentence(model_path=None,
             if is_random_forest:
                 # Static gesture prediction using RandomForest
                 features = landmarks.reshape(1, -1)
-                predicted_label = model.predict(features)[0]
+                raw_prediction = model.predict(features)[0]
+                predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                 probabilities = model.predict_proba(features)[0]
-                class_idx = label_encoder.transform([predicted_label])[0]
+                class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
                 seq_buffer.append(landmarks.astype(np.float32))
@@ -1199,9 +1219,10 @@ def predict_stable_sentence(model_path=None,
                 if is_random_forest:
                     # Static gesture prediction using RandomForest
                     features = landmarks.reshape(1, -1)
-                    predicted_label = model.predict(features)[0]
+                    raw_prediction = model.predict(features)[0]
+                    predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
                     probabilities = model.predict_proba(features)[0]
-                    class_idx = label_encoder.transform([predicted_label])[0]
+                    class_idx = _prediction_class_index(raw_prediction, label_encoder)
                     confidence = float(probabilities[class_idx])
                 elif unified_mode:
                     feat_window.append((now, landmarks))

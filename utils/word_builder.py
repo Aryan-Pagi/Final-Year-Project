@@ -10,6 +10,8 @@ from collections import Counter
 
 def is_word_label(label):
     """Return True if the label represents a whole-word gesture (len > 1)."""
+    if not isinstance(label, str):
+        return False
     return len(label) > 1
 
 

@@ -40,6 +40,9 @@ def _install_tensorflow_doc_stub():
     tensorflow_module.tools = tools_module
     tools_module.docs = docs_module
     docs_module.doc_controls = doc_controls_module
+    tensorflow_module.__path__ = []
+    tools_module.__path__ = []
+    docs_module.__path__ = []
 
     sys.modules['tensorflow'] = tensorflow_module
     sys.modules['tensorflow.tools'] = tools_module
@@ -64,12 +67,18 @@ class HandDetector:
             min_tracking_confidence (float): Minimum confidence for hand tracking
         """
         try:
-            import mediapipe as mp
-        except ImportError as exc:
-            if 'tensorflow' not in str(exc).lower():
-                raise
+            from tensorflow.tools.docs import doc_controls  # noqa: F401
+        except Exception:
             _install_tensorflow_doc_stub()
+
+        try:
             import mediapipe as mp
+        except Exception as exc:
+            if 'tensorflow' not in str(exc).lower() and 'classificationresult' not in str(exc).lower():
+                raise
+            raise ImportError(
+                'MediaPipe could not be imported cleanly. Check the local MediaPipe/TensorFlow installation.'
+            ) from exc
 
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils

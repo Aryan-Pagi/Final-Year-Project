@@ -702,15 +702,18 @@ def _stream_worker(mode, model_path, confidence_threshold, stop_event):
         error_text = str(e)
         state.log(f"Prediction error: {error_text}")
 
-        tf_runtime_error = (
-            "Failed to load the native TensorFlow runtime" in error_text
-            or "DLL load failed while importing _pywrap_tensorflow_internal" in error_text
-            or "tensorflow" in error_text.lower()
-        )
+        error_text_lower = error_text.lower()
+        tf_runtime_error = any(marker in error_text_lower for marker in [
+            "failed to load the native tensorflow runtime",
+            "dll load failed while importing _pywrap_tensorflow_internal",
+            "tensorflow",
+            "doc_controls",
+            "classificationresult",
+        ])
 
-        if tf_runtime_error and model_path and str(model_path).lower().endswith('.keras'):
+        if tf_runtime_error:
             state.update(state="RECOGNIZING", message="TensorFlow init failed. Falling back to diagnostic camera stream...")
-            state.log("TensorFlow runtime failure detected. Starting diagnostic camera fallback.")
+            state.log("TensorFlow or MediaPipe runtime failure detected. Starting diagnostic camera fallback.")
             try:
                 _direct_camera_stream_worker(stop_event)
                 return
