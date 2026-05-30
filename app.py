@@ -34,6 +34,7 @@ CORS(app)
 # Configure logging to capture output
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # ─── GLOBAL STATE ──────────────────────────────────────────────────────────
 class SystemState:
@@ -131,6 +132,8 @@ state.log("App initialized")
 latest_frame = None
 latest_frame_lock = threading.Lock()
 frame_debug_counter = 0
+mjpeg_debug_counter = 0
+last_prediction_log = None
 
 
 def _open_camera(device_index=0):
@@ -177,12 +180,17 @@ def _update_latest_frame(frame):
 
 def _update_prediction_result(gesture_label, confidence):
     """Callback to receive prediction results from the prediction functions."""
+    global last_prediction_log
     state.update_recognition(gesture=gesture_label, confidence=confidence, text=gesture_label)
-    state.log(f"Recognized: {gesture_label} (confidence: {confidence:.2%})")
+    prediction_key = (gesture_label, round(float(confidence or 0.0), 2))
+    if prediction_key != last_prediction_log:
+        state.log(f"Recognized: {gesture_label} (confidence: {confidence:.2%})")
+        last_prediction_log = prediction_key
 
 
 def _mjpeg_generator():
     """Yield JPEG frames for the browser stream."""
+    global mjpeg_debug_counter
     while True:
         with latest_frame_lock:
             frame = latest_frame
@@ -191,7 +199,9 @@ def _mjpeg_generator():
             time.sleep(0.05)
             continue
 
-        print(f"[FRAME] /video_feed yielding frame bytes={len(frame)}")
+        mjpeg_debug_counter += 1
+        if mjpeg_debug_counter <= 3 or mjpeg_debug_counter % 120 == 0:
+            print(f"[FRAME] /video_feed yielding frame bytes={len(frame)}")
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         time.sleep(0.03)
@@ -262,7 +272,6 @@ def _resolve_model_path(preferred_path=None):
 
     candidates.extend([
         os.path.join(MODELS_PATH, 'static_classifier.pkl'),
-        _model_metadata_path(),
         os.path.join(MODELS_PATH, 'bilstm_model.keras'),
     ])
 
@@ -699,7 +708,7 @@ def _stream_worker(mode, model_path, confidence_threshold, stop_event):
             or "tensorflow" in error_text.lower()
         )
 
-        if tf_runtime_error:
+        if tf_runtime_error and model_path and str(model_path).lower().endswith('.keras'):
             state.update(state="RECOGNIZING", message="TensorFlow init failed. Falling back to diagnostic camera stream...")
             state.log("TensorFlow runtime failure detected. Starting diagnostic camera fallback.")
             try:
@@ -740,7 +749,7 @@ def start_stream():
 
         resolved_model_path = model_path
         if mode != 'diagnostic':
-            resolved_model_path = _check_model_available(model_path)
+            resolved_model_path = _check_model_available(os.path.join(MODELS_PATH, 'static_classifier.pkl'))
             if not resolved_model_path:
                 return jsonify({"error": "Model not found. Run extraction + training first."}), 409
 

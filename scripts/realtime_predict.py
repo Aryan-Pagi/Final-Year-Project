@@ -137,7 +137,7 @@ def normalize_sentence_text(text, add_terminal_punctuation=False):
     return cleaned
 
 
-def _resolve_model_path(model_path='models/gesture_model.pkl'):
+def _resolve_model_path(model_path=None):
     """Resolve a usable model path, preferring existing trained artifacts."""
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -146,7 +146,6 @@ def _resolve_model_path(model_path='models/gesture_model.pkl'):
         candidates.append(model_path)
 
     candidates.extend([
-        'models/gesture_model.pkl',
         'models/static_classifier.pkl',
         'models/bilstm_model.keras',
     ])
@@ -165,7 +164,7 @@ def _resolve_model_path(model_path='models/gesture_model.pkl'):
     return None
 
 
-def load_model(model_path='models/gesture_model.pkl'):
+def load_model(model_path=None):
     """
     Load the trained model and label encoder.
     
@@ -239,10 +238,14 @@ def load_model(model_path='models/gesture_model.pkl'):
 
     except Exception as e:
         print(f"Error loading model: {e}")
+        static_fallback = _resolve_model_path('models/static_classifier.pkl')
+        if static_fallback and os.path.abspath(static_fallback) != os.path.abspath(full_model_path):
+            print("Falling back to static classifier model...")
+            return load_model(static_fallback)
         return None, None, False, None, {}
 
 
-def predict_realtime(model_path='models/gesture_model.pkl', 
+def predict_realtime(model_path=None, 
                     use_normalized=True,
                     confidence_threshold=0.7,
                     device_index=0,
@@ -494,7 +497,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print("✓ Real-time prediction stopped\n")
 
 
-def predict_words(model_path='models/gesture_model.pkl',
+def predict_words(model_path=None,
                   use_normalized=True,
                   confidence_threshold=0.7,
                   hold_duration=1.0,
@@ -754,7 +757,7 @@ def predict_words(model_path='models/gesture_model.pkl',
     print("✓ Word formation mode stopped\n")
 
 
-def predict_sentence(model_path='models/gesture_model.pkl',
+def predict_sentence(model_path=None,
                      use_normalized=True,
                      confidence_threshold=0.7,
                      hold_duration=1.0,
@@ -1067,7 +1070,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("\u2713 Sentence formation mode stopped\n")
 
 
-def predict_stable_sentence(model_path='models/gesture_model.pkl',
+def predict_stable_sentence(model_path=None,
                              use_normalized=True,
                              confidence_threshold=0.5,
                              buffer_size=10,

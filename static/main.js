@@ -5,8 +5,8 @@
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────
 const API_BASE = '/api';
-const STATUS_POLL_INTERVAL = 1000; // Poll every 1 second
-const LOGS_POLL_INTERVAL = 500;    // Poll logs every 500ms
+const STATUS_POLL_INTERVAL = 2500; // Poll every 2.5 seconds
+const LOGS_POLL_INTERVAL = 5000;   // Poll logs every 5 seconds
 
 // Status colors
 const STATUS_COLORS = {
@@ -658,11 +658,11 @@ function startLogsPolling() {
 }
 
 async function updateLogs() {
+    if (!elements.consoleOutput) return;
     try {
         const response = await fetch(`${API_BASE}/logs`);
         const data = await response.json();
 
-        if (!elements.consoleOutput) return;
         data.logs.forEach(log => {
             // Avoid duplicates
             const exists = Array.from(elements.consoleOutput.children).some(child => 

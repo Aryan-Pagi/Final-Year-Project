@@ -4,8 +4,47 @@ This module provides helper functions for detecting and extracting hand landmark
 using MediaPipe Hands solution.
 """
 
+import os
 import cv2
 import numpy as np
+import sys
+import types
+
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+
+
+def _install_tensorflow_doc_stub():
+    """Install a minimal tensorflow.tools.docs.doc_controls stub for MediaPipe."""
+    tensorflow_module = types.ModuleType('tensorflow')
+    tools_module = types.ModuleType('tensorflow.tools')
+    docs_module = types.ModuleType('tensorflow.tools.docs')
+    doc_controls_module = types.ModuleType('tensorflow.tools.docs.doc_controls')
+
+    def _identity(value=None, *args, **kwargs):
+        return value
+
+    def _decorator_factory(*args, **kwargs):
+        def _decorator(obj):
+            return obj
+
+        return _decorator
+
+    doc_controls_module.do_not_generate_docs = _identity
+    doc_controls_module.do_not_doc_inheritable = _identity
+    doc_controls_module.set_deprecated = _identity
+    doc_controls_module.inheritable_header = _decorator_factory
+    doc_controls_module.header = doc_controls_module.inheritable_header
+    doc_controls_module.get_header = lambda obj: None
+    doc_controls_module.get_inheritable_header = lambda obj: None
+
+    tensorflow_module.tools = tools_module
+    tools_module.docs = docs_module
+    docs_module.doc_controls = doc_controls_module
+
+    sys.modules['tensorflow'] = tensorflow_module
+    sys.modules['tensorflow.tools'] = tools_module
+    sys.modules['tensorflow.tools.docs'] = docs_module
+    sys.modules['tensorflow.tools.docs.doc_controls'] = doc_controls_module
 
 
 class HandDetector:
@@ -24,7 +63,13 @@ class HandDetector:
             min_detection_confidence (float): Minimum confidence for hand detection
             min_tracking_confidence (float): Minimum confidence for hand tracking
         """
-        import mediapipe as mp
+        try:
+            import mediapipe as mp
+        except ImportError as exc:
+            if 'tensorflow' not in str(exc).lower():
+                raise
+            _install_tensorflow_doc_stub()
+            import mediapipe as mp
 
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
