@@ -146,7 +146,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
         max_num_hands=2,
         min_detection_confidence=0.4,
         min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
 
     all_landmarks = []
@@ -250,7 +250,7 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_clips',
         max_num_hands=2,
         min_detection_confidence=0.4,
         min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
 
     all_sequences = []

@@ -384,7 +384,7 @@ def predict_realtime(model_path=None,
         max_num_hands=2,  # Support up to 2 hands
         min_detection_confidence=0.4,
         min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
     
     # For FPS calculation
@@ -628,7 +628,7 @@ def predict_words(model_path=None,
         max_num_hands=2,
         min_detection_confidence=0.4,
         min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -867,7 +867,7 @@ def predict_sentence(model_path=None,
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
         min_detection_confidence=0.4, min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -1191,7 +1191,7 @@ def predict_stable_sentence(model_path=None,
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
         min_detection_confidence=0.4, min_tracking_confidence=0.4,
-        model_complexity=2
+        model_complexity=1
     )
 
     prev_time = time.time()

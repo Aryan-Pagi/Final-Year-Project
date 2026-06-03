@@ -57,7 +57,7 @@ class HandDetector:
     
     def __init__(self, static_image_mode=False, max_num_hands=2, 
                  min_detection_confidence=0.4, min_tracking_confidence=0.4,
-                 model_complexity=2):
+                 model_complexity=1):
         """
         Initialize the HandDetector with MediaPipe Hands.
         
