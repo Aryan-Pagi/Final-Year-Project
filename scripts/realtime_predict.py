@@ -23,8 +23,14 @@ if hasattr(sys.stdout, 'reconfigure'):
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_engineered_features
+from utils.mediapipe_utils import HandDetector, display_text, get_fps
 from utils.word_builder import WordBuilder, is_word_label
+
+
+TARGET_PREPROCESS_SIZE = 640
+HAND_LANDMARKS = 21
+HAND_FEATURES = HAND_LANDMARKS * 3
+FEATURE_SIZE = HAND_FEATURES * 2
 
 
 def _open_camera(device_index=0):
@@ -130,29 +136,41 @@ def _fit_feature_size(features, expected_size):
     return features[:expected_size]
 
 
-def _extract_two_hand_features(detector, results, frame_shape, use_normalized):
-    """Extract engineered features for up to two hands and concatenate them."""
-    if use_normalized:
-        hand_landmarks = detector.extract_landmarks_normalized(results, frame_shape, hand_index=None)
-    else:
-        hand_landmarks = detector.extract_landmarks(results, hand_index=None)
-
-    if not hand_landmarks:
+def standardize_image(image, target_size=TARGET_PREPROCESS_SIZE):
+    """Letterbox an image into a fixed square without distorting aspect ratio."""
+    if image is None:
         return None
-
-    if not isinstance(hand_landmarks, list):
-        hand_landmarks = [hand_landmarks]
-
-    hand_features = [compute_engineered_features(np.asarray(lm, dtype=np.float32))
-                     for lm in hand_landmarks[:2]]
-    if not hand_features:
+    h, w = image.shape[:2]
+    if h == 0 or w == 0:
         return None
+    scale = target_size / max(h, w)
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+    y_off = (target_size - new_h) // 2
+    x_off = (target_size - new_w) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+    return canvas
 
-    feature_size = hand_features[0].shape[0]
-    while len(hand_features) < 2:
-        hand_features.append(np.zeros(feature_size, dtype=np.float32))
 
-    return np.concatenate(hand_features)
+def extract_wrist_relative_features(results):
+    """Return wrist-relative landmark coordinates for up to two hands."""
+    if not results or not results.multi_hand_landmarks:
+        return None
+    features = np.zeros(FEATURE_SIZE, dtype=np.float32)
+    ordered_hands = sorted(
+        results.multi_hand_landmarks[:2],
+        key=lambda hand_landmarks: hand_landmarks.landmark[0].x
+    )
+    for i, hand_landmarks in enumerate(ordered_hands):
+        wrist = hand_landmarks.landmark[0]
+        base_idx = i * HAND_FEATURES
+        for j, lm in enumerate(hand_landmarks.landmark):
+            idx = base_idx + (j * 3)
+            features[idx] = lm.x - wrist.x
+            features[idx + 1] = lm.y - wrist.y
+            features[idx + 2] = lm.z - wrist.z
+    return features
 
 
 def normalize_sentence_text(text, add_terminal_punctuation=False):
@@ -252,7 +270,7 @@ def load_model(model_path=None):
                 'num_features': None,
                 'model_type': 'BiLSTM',
                 'max_seq_frames': 30,
-                'feature_size': 93,
+                'feature_size': FEATURE_SIZE,
                 'model': model,
             }
         else:
@@ -267,7 +285,7 @@ def load_model(model_path=None):
         model_meta = {
             'model_type': model_type,
             'max_seq_frames': model_data.get('max_seq_frames', 30),
-            'feature_size': model_data.get('feature_size', 93),
+            'feature_size': model_data.get('feature_size', FEATURE_SIZE),
         }
 
         if model_type == 'BiLSTM':
@@ -334,13 +352,8 @@ def predict_realtime(model_path=None,
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
     is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
-    feat_size = model_meta.get('feature_size', 93)
-
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm
-                    and num_features is not None
-                    and num_features > base_feat_count)
+    feat_size = model_meta.get('feature_size', FEATURE_SIZE)
+    unified_mode = False
     TIME_WINDOW = 1.5  # seconds (used only in unified_mode)
     feat_window = deque()     # (timestamp, array) pairs — unified_mode only
     seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
@@ -369,8 +382,9 @@ def predict_realtime(model_path=None,
     detector = HandDetector(
         static_image_mode=False,
         max_num_hands=2,  # Support up to 2 hands
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4,
+        model_complexity=2
     )
     
     # For FPS calculation
@@ -400,8 +414,10 @@ def predict_realtime(model_path=None,
         # Flip the frame horizontally for a mirror effect
         frame = cv2.flip(frame, 1)
         
-        # Detect hands
-        frame, results = detector.find_hands(frame, draw=True)
+        standardized = standardize_image(frame)
+        if standardized is None:
+            continue
+        frame, results = detector.find_hands(standardized, draw=True)
         
         # Get number of hands detected
         num_hands = detector.get_hand_count(results)
@@ -413,20 +429,11 @@ def predict_realtime(model_path=None,
                                position=(frame.shape[1] - 250, 30), font_scale=0.6, 
                                color=(255, 255, 0), thickness=2)
         
-        # Extract landmarks from first hand for prediction
-        if use_normalized:
-            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=0)
-        else:
-            landmarks = detector.extract_landmarks(results, hand_index=0)
+        features = extract_wrist_relative_features(results)
         
         # Predict gesture if hand is detected
-        if landmarks is not None:
+        if features is not None:
             if is_random_forest:
-                # Static gesture prediction using RandomForest
-                # Reshape single feature vector for sklearn model
-                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
-                if features is None:
-                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
                 features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
@@ -434,9 +441,7 @@ def predict_realtime(model_path=None,
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
-                if uses_engineered:
-                    landmarks = compute_engineered_features(landmarks)
-                seq_buffer.append(landmarks.astype(np.float32))
+                seq_buffer.append(features.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
                 seq[max_seq_frames - len(recent):] = np.array(recent)
@@ -447,7 +452,7 @@ def predict_realtime(model_path=None,
             elif unified_mode:
                 # Time-based sliding window (mean+std)
                 _now = time.time()
-                feat_window.append((_now, landmarks))
+                feat_window.append((_now, features))
                 while feat_window and (_now - feat_window[0][0]) > TIME_WINDOW:
                     feat_window.popleft()
                 arr = np.array([f for _, f in feat_window])
@@ -457,11 +462,9 @@ def predict_realtime(model_path=None,
                 confidence = prediction_proba[prediction]
                 predicted_label = label_encoder.inverse_transform([prediction])[0]
             else:
-                if uses_engineered:
-                    landmarks = compute_engineered_features(landmarks)
-                landmarks_reshaped = landmarks.reshape(1, -1)
-                prediction = model.predict(landmarks_reshaped)[0]
-                prediction_proba = model.predict_proba(landmarks_reshaped)[0]
+                features_reshaped = features.reshape(1, -1)
+                prediction = model.predict(features_reshaped)[0]
+                prediction_proba = model.predict_proba(features_reshaped)[0]
                 confidence = prediction_proba[prediction]
                 predicted_label = label_encoder.inverse_transform([prediction])[0]
 
@@ -510,11 +513,6 @@ def predict_realtime(model_path=None,
             frame = display_text(frame, "No hand detected", 
                                position=(10, 30), font_scale=1, 
                                color=(0, 0, 255), thickness=2)
-            prediction_history.clear()
-            if is_bilstm:
-                seq_buffer.clear()
-            else:
-                feat_window.clear()
         curr_time = time.time()
         fps = get_fps(prev_time, curr_time)
         prev_time = curr_time
@@ -595,13 +593,8 @@ def predict_words(model_path=None,
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
     is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
-    feat_size = model_meta.get('feature_size', 93)
-
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm and not is_random_forest
-                    and num_features is not None
-                    and num_features > base_feat_count)
+    feat_size = model_meta.get('feature_size', FEATURE_SIZE)
+    unified_mode = False
     TIME_WINDOW = 1.5  # seconds — used in unified_mode only
     feat_window = deque()     # (timestamp, array) pairs — unified_mode only
     seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
@@ -633,8 +626,9 @@ def predict_words(model_path=None,
     detector = HandDetector(
         static_image_mode=False,
         max_num_hands=2,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4,
+        model_complexity=2
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -652,24 +646,19 @@ def predict_words(model_path=None,
             break
 
         frame = cv2.flip(frame, 1)
-        frame, results = detector.find_hands(frame, draw=True)
+        standardized = standardize_image(frame)
+        if standardized is None:
+            continue
+        frame, results = detector.find_hands(standardized, draw=True)
         h, w = frame.shape[:2]
 
-        # Extract landmarks
-        if use_normalized:
-            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=0)
-        else:
-            landmarks = detector.extract_landmarks(results, hand_index=0)
+        features = extract_wrist_relative_features(results)
 
         predicted_label = None
         confidence = 0.0
 
-        if landmarks is not None:
+        if features is not None:
             if is_random_forest:
-                # Static gesture prediction using RandomForest
-                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
-                if features is None:
-                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
                 features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
@@ -677,9 +666,7 @@ def predict_words(model_path=None,
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
-                if uses_engineered:
-                    landmarks = compute_engineered_features(landmarks)
-                seq_buffer.append(landmarks.astype(np.float32))
+                seq_buffer.append(features.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
                 seq[max_seq_frames - len(recent):] = np.array(recent)
@@ -689,7 +676,7 @@ def predict_words(model_path=None,
                 predicted_label = label_encoder.inverse_transform([pred_idx])[0]
             elif unified_mode:
                 _now = time.time()
-                feat_window.append((_now, landmarks))
+                feat_window.append((_now, features))
                 while feat_window and (_now - feat_window[0][0]) > TIME_WINDOW:
                     feat_window.popleft()
                 arr = np.array([f for _, f in feat_window])
@@ -699,9 +686,9 @@ def predict_words(model_path=None,
                 confidence = prediction_proba[prediction]
                 predicted_label = label_encoder.inverse_transform([prediction])[0]
             else:
-                landmarks_reshaped = landmarks.reshape(1, -1)
-                prediction = model.predict(landmarks_reshaped)[0]
-                prediction_proba = model.predict_proba(landmarks_reshaped)[0]
+                features_reshaped = features.reshape(1, -1)
+                prediction = model.predict(features_reshaped)[0]
+                prediction_proba = model.predict_proba(features_reshaped)[0]
                 confidence = prediction_proba[prediction]
                 predicted_label = label_encoder.inverse_transform([prediction])[0]
 
@@ -713,12 +700,8 @@ def predict_words(model_path=None,
             if confirmed is not None and results_callback is not None:
                 results_callback(confirmed, confidence)
         else:
-            # No confident prediction — reset hold tracking
-            word_builder._reset_tracking()
-            if is_bilstm:
-                seq_buffer.clear()
-            else:
-                feat_window.clear()
+            # No confident prediction — preserve temporal state across short gaps.
+            pass
 
         # ── Draw UI ──────────────────────────────────────────
 
@@ -857,13 +840,8 @@ def predict_sentence(model_path=None,
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
     is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     max_seq_frames = model_meta.get('max_seq_frames', 30)
-    feat_size = model_meta.get('feature_size', 93)
-
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm and not is_random_forest
-                    and num_features is not None
-                    and num_features > base_feat_count)
+    feat_size = model_meta.get('feature_size', FEATURE_SIZE)
+    unified_mode = False
     TIME_WINDOW = 1.5  # seconds — used in unified_mode only
     feat_window = deque()     # (timestamp, array) pairs — unified_mode only
     seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
@@ -888,7 +866,8 @@ def predict_sentence(model_path=None,
 
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5
+        min_detection_confidence=0.4, min_tracking_confidence=0.4,
+        model_complexity=2
     )
 
     word_builder = WordBuilder(hold_duration=hold_duration)
@@ -908,25 +887,21 @@ def predict_sentence(model_path=None,
             break
 
         frame = cv2.flip(frame, 1)
-        frame, results = detector.find_hands(frame, draw=True)
+        standardized = standardize_image(frame)
+        if standardized is None:
+            continue
+        frame, results = detector.find_hands(standardized, draw=True)
         h, w = frame.shape[:2]
         now = time.time()
 
-        if use_normalized:
-            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=0)
-        else:
-            landmarks = detector.extract_landmarks(results, hand_index=0)
+        features = extract_wrist_relative_features(results)
 
         predicted_label = None
         confidence = 0.0
 
-        if landmarks is not None:
+        if features is not None:
             no_hand_since = None  # hand is present — reset absence timer
             if is_random_forest:
-                # Static gesture prediction using RandomForest
-                features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
-                if features is None:
-                    features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
                 features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                 raw_prediction = model.predict(features)[0]
                 predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
@@ -934,9 +909,7 @@ def predict_sentence(model_path=None,
                 class_idx = _prediction_class_index(raw_prediction, label_encoder)
                 confidence = float(probabilities[class_idx])
             elif is_bilstm:
-                if uses_engineered:
-                    landmarks = compute_engineered_features(landmarks)
-                seq_buffer.append(landmarks.astype(np.float32))
+                seq_buffer.append(features.astype(np.float32))
                 seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
                 recent = list(seq_buffer)
                 seq[max_seq_frames - len(recent):] = np.array(recent)
@@ -946,7 +919,7 @@ def predict_sentence(model_path=None,
                 predicted_label = label_encoder.inverse_transform([pred_idx])[0]
             elif unified_mode:
                 _now = time.time()
-                feat_window.append((_now, landmarks))
+                feat_window.append((_now, features))
                 while feat_window and (_now - feat_window[0][0]) > TIME_WINDOW:
                     feat_window.popleft()
                 arr = np.array([f for _, f in feat_window])
@@ -956,18 +929,13 @@ def predict_sentence(model_path=None,
                 confidence = prob[pred_enc]
                 predicted_label = label_encoder.inverse_transform([pred_enc])[0]
             else:
-                lm_r = landmarks.reshape(1, -1)
-                pred_enc = model.predict(lm_r)[0]
-                prob = model.predict_proba(lm_r)[0]
+                features_r = features.reshape(1, -1)
+                pred_enc = model.predict(features_r)[0]
+                prob = model.predict_proba(features_r)[0]
                 confidence = prob[pred_enc]
                 predicted_label = label_encoder.inverse_transform([pred_enc])[0]
         else:
             # Hand absent
-            if is_bilstm:
-                seq_buffer.clear()
-            else:
-                feat_window.clear()
-            word_builder._reset_tracking()
             if word_builder.current_word:
                 if no_hand_since is None:
                     no_hand_since = now
@@ -1188,12 +1156,7 @@ def predict_stable_sentence(model_path=None,
     is_random_forest = model_meta.get('model_type') == 'RandomForest_Static'
     is_bilstm = model_meta.get('model_type') == 'BiLSTM'
     
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    # Unified mode only applies to legacy models (not RandomForest or BiLSTM)
-    unified_mode = (not is_random_forest and not is_bilstm 
-                    and num_features is not None 
-                    and num_features > base_feat_count)
+    unified_mode = False
     TIME_WINDOW = 1.5  # seconds — matches training clip duration
     feat_window = deque()  # stores (timestamp, feature_array) pairs
 
@@ -1227,7 +1190,8 @@ def predict_stable_sentence(model_path=None,
 
     detector = HandDetector(
         static_image_mode=False, max_num_hands=2,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5
+        min_detection_confidence=0.4, min_tracking_confidence=0.4,
+        model_complexity=2
     )
 
     prev_time = time.time()
@@ -1243,28 +1207,25 @@ def predict_stable_sentence(model_path=None,
             break
 
         frame = cv2.flip(frame, 1)
-        frame, results = detector.find_hands(frame, draw=True)
+        standardized = standardize_image(frame)
+        if standardized is None:
+            continue
+        frame, results = detector.find_hands(standardized, draw=True)
         h, w = frame.shape[:2]
         now = time.time()
 
         # ── Step 1: extract landmarks ─────────────────────────────────────────
-        if use_normalized:
-            landmarks = detector.extract_landmarks_normalized(results, frame.shape, hand_index=0)
-        else:
-            landmarks = detector.extract_landmarks(results, hand_index=0)
+        features = extract_wrist_relative_features(results)
 
         predicted_label = None
         confidence = 0.0
 
-        if landmarks is not None:
+        if features is not None:
             # ── Step 2: feature engineering + unified mode ────────────────────
             # ── Step 3: model prediction ──────────────────────────────────────
             try:
                 if is_random_forest:
                     # Static gesture prediction using RandomForest
-                    features = _extract_two_hand_features(detector, results, frame.shape, use_normalized)
-                    if features is None:
-                        features = compute_engineered_features(np.asarray(landmarks, dtype=np.float32))
                     features = _fit_feature_size(features, model_meta.get('feature_size')).reshape(1, -1)
                     raw_prediction = model.predict(features)[0]
                     predicted_label = _decode_prediction_label(raw_prediction, label_encoder)
@@ -1272,9 +1233,7 @@ def predict_stable_sentence(model_path=None,
                     class_idx = _prediction_class_index(raw_prediction, label_encoder)
                     confidence = float(probabilities[class_idx])
                 elif unified_mode:
-                    if uses_engineered:
-                        landmarks = compute_engineered_features(landmarks)
-                    feat_window.append((now, landmarks))
+                    feat_window.append((now, features))
                     while feat_window and (now - feat_window[0][0]) > TIME_WINDOW:
                         feat_window.popleft()
                     arr = np.array([f for _, f in feat_window])
@@ -1284,10 +1243,8 @@ def predict_stable_sentence(model_path=None,
                     confidence = prob[pred_enc]
                     predicted_label = label_encoder.inverse_transform([pred_enc])[0]
                 else:
-                    if uses_engineered:
-                        landmarks = compute_engineered_features(landmarks)
-                    pred_enc = model.predict(landmarks.reshape(1, -1))[0]
-                    prob = model.predict_proba(landmarks.reshape(1, -1))[0]
+                    pred_enc = model.predict(features.reshape(1, -1))[0]
+                    prob = model.predict_proba(features.reshape(1, -1))[0]
                     confidence = prob[pred_enc]
                     predicted_label = label_encoder.inverse_transform([pred_enc])[0]
             except Exception:
@@ -1298,8 +1255,8 @@ def predict_stable_sentence(model_path=None,
                 pred_buffer.append(predicted_label)
             # No hand = don't touch the buffer (handled below)
         else:
-            # No hand detected — clear feature window but keep pred buffer
-            feat_window.clear()
+            # No hand detected — keep temporal state so brief misses do not break the sample.
+            pass
 
         # ── Step 5: check buffer for stability ───────────────────────────────
         #  Confirmed only when buffer is full and one label dominates

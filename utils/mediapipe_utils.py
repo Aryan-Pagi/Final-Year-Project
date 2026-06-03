@@ -55,8 +55,9 @@ class HandDetector:
     A class to handle hand detection and landmark extraction using MediaPipe.
     """
     
-    def __init__(self, static_image_mode=False, max_num_hands=1, 
-                 min_detection_confidence=0.5, min_tracking_confidence=0.5):
+    def __init__(self, static_image_mode=False, max_num_hands=2, 
+                 min_detection_confidence=0.4, min_tracking_confidence=0.4,
+                 model_complexity=2):
         """
         Initialize the HandDetector with MediaPipe Hands.
         
@@ -87,6 +88,7 @@ class HandDetector:
         self.hands = self.mp_hands.Hands(
             static_image_mode=static_image_mode,
             max_num_hands=max_num_hands,
+            model_complexity=model_complexity,
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence
         )

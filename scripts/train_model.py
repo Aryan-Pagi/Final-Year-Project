@@ -30,10 +30,7 @@ Adam = None
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import get_engineered_feature_names
-
 MAX_SEQ_FRAMES = 30
-_BASE_FEATURES = len(get_engineered_feature_names())
 
 
 def train_model(sequences_npz='dataset/sequences.npz',
@@ -272,7 +269,7 @@ def train_model(sequences_npz='dataset/sequences.npz',
         'max_seq_frames': int(seq_len),
         'feature_size': int(feat_size),
         'num_features': int(feat_size),    # kept for backward-compat detection
-        'uses_engineered_features': True,
+        'uses_engineered_features': False,
         'test_accuracy': test_accuracy,
         'val_accuracy': best_val_acc,
     }
@@ -471,7 +468,7 @@ def _train_static_random_forest(landmarks_csv='dataset/landmarks.csv',
         'label_encoder': label_encoder,
         'feature_size': X_train.shape[1],
         'num_features': X_train.shape[1],
-        'uses_engineered_features': True,
+        'uses_engineered_features': False,
         'test_accuracy': test_accuracy,
         'num_classes': num_classes,
     }
