@@ -1,0 +1,59 @@
+## 1. Hospital and Medical Signs
+1. Doctor
+2. Nurse
+3. Medicine / Tablet
+4. Injection
+5. Pain
+6. Blood
+7. Fever
+8. X-Ray / Scan
+9. Prescription / Paper
+10. Check-up
+
+## 2. Government Office Signs
+11. Office
+12. Officer / Boss
+13. Aadhaar / ID Card
+14. Form / Application
+15. Signature / Sign
+16. Stamp / Seal
+17. Line / Queue
+18. Window / Counter
+19. Fee / Tax
+20. Certificate / Document
+
+## 3. Public Transport Signs
+21. Bus
+22. Auto / Rickshaw
+23. Train
+24. Ticket
+25. Change / Money
+26. Stop / Halt
+27. Station / Stand
+28. Seat
+29. Route / Path
+30. Driver
+
+## 4. Emergency Signs
+31. Help
+32. Danger
+33. Fire
+34. Police
+35. Ambulance
+36. Accident
+37. Thief / Robbery
+38. Lost
+39. Call
+40. Stop / Don't
+
+## 5. Semi-General Interaction Signs
+41. Hello / Namaste
+42. Thank you
+43. Please
+44. Sorry
+45. Yes
+46. No
+47. Wait
+48. Where
+49. Name
+50. Write
