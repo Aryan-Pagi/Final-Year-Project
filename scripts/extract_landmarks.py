@@ -5,6 +5,7 @@ The landmarks are saved to a CSV file for training.
 """
 
 import cv2
+import json
 import os
 import sys
 import pandas as pd
@@ -24,6 +25,129 @@ UNIFIED_FEATURES = _BASE_FEATURES * 2
 
 # Maximum sequence length for BiLSTM training (frames per clip)
 MAX_SEQ_FRAMES = 30
+
+
+def _numeric_sort_key(name):
+    """Sort names using a numeric suffix when available."""
+    base = os.path.splitext(name)[0]
+    if '_' in base:
+        suffix = base.rsplit('_', 1)[-1]
+        if suffix.isdigit():
+            return (0, int(suffix), base.lower())
+    return (1, base.lower())
+
+
+def _sample_key(label, item_name):
+    """Create a stable relative key for a raw dataset sample."""
+    return f"{label}/{item_name}"
+
+
+def _manifest_path(output_path):
+    """Return the sidecar manifest path for an output artifact."""
+    root, _ = os.path.splitext(output_path)
+    return f"{root}.processed.json"
+
+
+def _load_manifest(manifest_path):
+    """Load previously processed sample keys from a sidecar manifest."""
+    if not os.path.exists(manifest_path):
+        return []
+
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        entries = data.get('entries', [])
+        return [str(entry) for entry in entries]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+
+def _save_manifest(manifest_path, entries):
+    """Persist processed sample keys for the next incremental run."""
+    payload = {
+        'version': 1,
+        'entries': list(entries),
+    }
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+
+
+def _scan_dataset(full_dataset_path):
+    """Return dataset samples grouped by label in a deterministic order."""
+    label_dirs = [d for d in os.listdir(full_dataset_path)
+                  if os.path.isdir(os.path.join(full_dataset_path, d))]
+
+    samples_by_label = {}
+    for label in sorted(label_dirs):
+        label_path = os.path.join(full_dataset_path, label)
+
+        clip_dirs = sorted(
+            [d for d in os.listdir(label_path)
+             if os.path.isdir(os.path.join(label_path, d)) and d.startswith('clip_')],
+            key=_numeric_sort_key,
+        )
+        image_files = sorted(
+            [f for f in os.listdir(label_path)
+             if f.lower().endswith(('.jpg', '.jpeg', '.png'))],
+            key=_numeric_sort_key,
+        )
+
+        samples = []
+        if clip_dirs:
+            for clip_name in clip_dirs:
+                samples.append({
+                    'key': _sample_key(label, clip_name),
+                    'label': label,
+                    'path': os.path.join(label_path, clip_name),
+                    'kind': 'clip',
+                    'name': clip_name,
+                })
+        elif image_files:
+            for img_name in image_files:
+                samples.append({
+                    'key': _sample_key(label, img_name),
+                    'label': label,
+                    'path': os.path.join(label_path, img_name),
+                    'kind': 'image',
+                    'name': img_name,
+                })
+
+        if samples:
+            samples_by_label[label] = samples
+
+    return samples_by_label
+
+
+def _load_existing_counts(full_output_path):
+    """Infer how many samples per label already exist in an output file."""
+    if not os.path.exists(full_output_path):
+        return {}
+
+    try:
+        if full_output_path.lower().endswith('.csv'):
+            df = pd.read_csv(full_output_path)
+            if 'label' not in df.columns:
+                return {}
+            return df['label'].astype(str).value_counts().to_dict()
+
+        if full_output_path.lower().endswith('.npz'):
+            data = np.load(full_output_path, allow_pickle=True)
+            labels = data['labels'].astype(str)
+            return pd.Series(labels).value_counts().to_dict()
+    except Exception:
+        return {}
+
+    return {}
+
+
+def _bootstrap_processed_entries(samples_by_label, existing_counts):
+    """Rebuild a processed-entry list from an existing output artifact."""
+    processed_entries = []
+    for label, samples in samples_by_label.items():
+        processed_count = int(existing_counts.get(label, 0))
+        processed_entries.extend(sample['key'] for sample in samples[:processed_count])
+    return processed_entries
 
 
 def _frame_feature(detector, image, use_normalized):
@@ -144,6 +268,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     full_dataset_path = os.path.join(script_dir, dataset_path)
     full_output_path = os.path.join(script_dir, output_csv)
+    manifest_path = _manifest_path(full_output_path)
     
     if not os.path.exists(full_dataset_path):
         print(f"Error: Dataset path does not exist: {full_dataset_path}")
@@ -157,84 +282,88 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
         min_tracking_confidence=0.1
     )
 
-    # Prepare data storage
-    all_landmarks = []
-    all_labels = []
-
-    # Get all label directories
-    label_dirs = [d for d in os.listdir(full_dataset_path)
-                  if os.path.isdir(os.path.join(full_dataset_path, d))]
-
-    if not label_dirs:
+    samples_by_label = _scan_dataset(full_dataset_path)
+    if not samples_by_label:
         print(f"Error: No label directories found in {full_dataset_path}")
         print("Please collect data first using collect_data.py")
         return
+
+    existing_counts = {}
+    processed_entries = _load_manifest(manifest_path)
+    if processed_entries:
+        processed_set = set(processed_entries)
+    else:
+        existing_counts = _load_existing_counts(full_output_path)
+        processed_entries = _bootstrap_processed_entries(samples_by_label, existing_counts)
+        processed_set = set(processed_entries)
+
+    # Prepare data storage
+    all_landmarks = []
+    all_labels = []
 
     print(f"\n{'='*60}")
     print("Extracting Landmarks from Dataset")
     print(f"{'='*60}")
     print(f"Dataset path: {full_dataset_path}")
-    print(f"Found {len(label_dirs)} label(s): {', '.join(sorted(label_dirs))}")
+    print(f"Found {len(samples_by_label)} label(s): {', '.join(sorted(samples_by_label))}")
     print(f"Feature vector size: {UNIFIED_FEATURES} (mean+std of {_BASE_FEATURES} features)")
+    if processed_entries:
+        print(f"Already indexed samples: {len(processed_entries)}")
     print(f"{'='*60}\n")
 
     total_processed = 0
     total_skipped = 0
+    total_existing = 0
     failed_images = []
 
     # Process each label directory
-    for label in sorted(label_dirs):
-        label_path = os.path.join(full_dataset_path, label)
+    for label in sorted(samples_by_label):
+        samples = samples_by_label[label]
+        new_samples = [sample for sample in samples if sample['key'] not in processed_set]
+        if not new_samples:
+            total_existing += len(samples)
+            continue
 
-        # Detect whether this label uses clip sub-folders or flat images
-        clip_dirs = sorted(
-            [d for d in os.listdir(label_path)
-             if os.path.isdir(os.path.join(label_path, d)) and d.startswith('clip_')]
-        )
-        image_files = [f for f in os.listdir(label_path)
-                       if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        total_existing += len(samples) - len(new_samples)
+        sample_kind = new_samples[0]['kind']
+        print(f"Processing label '{label}': {len(new_samples)} new {sample_kind}(s)")
 
-        if clip_dirs:
-            # ── Video-sequence label ──────────────────────────────────
-            print(f"Processing label '{label}': {len(clip_dirs)} video clips")
-            for clip_name in tqdm(clip_dirs, desc=f"  {label}", unit="clip"):
-                clip_path = os.path.join(label_path, clip_name)
-                feat = _clip_to_feature(detector, clip_path, use_normalized)
-                if feat is not None:
-                    all_landmarks.append(feat)
-                    all_labels.append(label)
-                    total_processed += 1
-                else:
-                    total_skipped += 1
-                    failed_images.append(f"{label}/{clip_name}")
-
-        elif image_files:
-            # ── Static-image label ────────────────────────────────────
-            print(f"Processing label '{label}': {len(image_files)} images")
-            for img_file in tqdm(image_files, desc=f"  {label}", unit="img"):
-                img_path = os.path.join(label_path, img_file)
-                image = cv2.imread(img_path)
+        for sample in tqdm(new_samples, desc=f"  {label}", unit=sample_kind):
+            processed_entries.append(sample['key'])
+            if sample['kind'] == 'clip':
+                feat = _clip_to_feature(detector, sample['path'], use_normalized)
+            else:
+                image = cv2.imread(sample['path'])
                 if image is None:
-                    print(f"  Warning: Could not read image: {img_file}")
+                    print(f"  Warning: Could not read image: {sample['name']}")
                     total_skipped += 1
                     continue
                 feat = _static_to_feature(detector, image, use_normalized)
-                if feat is not None:
-                    all_landmarks.append(feat)
-                    all_labels.append(label)
-                    total_processed += 1
-                else:
-                    total_skipped += 1
-                    failed_images.append(f"{label}/{img_file}")
-        else:
-            print(f"Warning: No images or clips found for label '{label}' — skipping")
+
+            if feat is not None:
+                all_landmarks.append(feat)
+                all_labels.append(label)
+                total_processed += 1
+            else:
+                total_skipped += 1
+                failed_images.append(sample['key'])
     
     # Close detector
     detector.close()
+
+    if total_processed == 0:
+        if processed_entries:
+            _save_manifest(manifest_path, processed_entries)
+            print("No new landmarks found. Existing output is already up to date.")
+            return
+        print("Error: No landmarks extracted. Please check your dataset.")
+        return
     
     print(f"\n{'='*60}")
     print("Extraction Summary")
     print(f"{'='*60}")
+    if total_existing > 0:
+        print(f"Total samples already indexed: {total_existing}")
     print(f"Total images processed: {total_processed}")
     print(f"Total images skipped (no hand detected): {total_skipped}")
     print(f"Success rate: {(total_processed/(total_processed+total_skipped)*100):.1f}%")
@@ -279,9 +408,18 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
     
     # Ensure labels are strings
     df['label'] = df['label'].astype(str)
+
+    if os.path.exists(full_output_path):
+        try:
+            existing_df = pd.read_csv(full_output_path)
+            if not existing_df.empty:
+                df = pd.concat([existing_df, df], ignore_index=True)
+        except Exception:
+            pass
     
     # Save to CSV
     df.to_csv(full_output_path, index=False)
+    _save_manifest(manifest_path, processed_entries)
     
     print(f"✓ Landmarks saved to: {full_output_path}")
     print(f"✓ Dataset shape: {df.shape}")
@@ -307,6 +445,7 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     full_dataset_path = os.path.join(script_dir, dataset_path)
     full_output_path = os.path.join(script_dir, output_npz)
+    manifest_path = _manifest_path(full_output_path)
 
     if not os.path.exists(full_dataset_path):
         print(f"Error: Dataset path does not exist: {full_dataset_path}")
@@ -319,87 +458,103 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
         min_tracking_confidence=0.1
     )
 
-    all_sequences = []
-    all_labels = []
-
-    label_dirs = [d for d in os.listdir(full_dataset_path)
-                  if os.path.isdir(os.path.join(full_dataset_path, d))]
-
-    if not label_dirs:
+    samples_by_label = _scan_dataset(full_dataset_path)
+    if not samples_by_label:
         print(f"Error: No label directories found in {full_dataset_path}")
         return
+
+    processed_entries = _load_manifest(manifest_path)
+    if processed_entries:
+        processed_set = set(processed_entries)
+    else:
+        existing_counts = _load_existing_counts(full_output_path)
+        processed_entries = _bootstrap_processed_entries(samples_by_label, existing_counts)
+        processed_set = set(processed_entries)
+
+    all_sequences = []
+    all_labels = []
 
     print(f"\n{'='*60}")
     print("Extracting Landmark Sequences (for BiLSTM)")
     print(f"{'='*60}")
     print(f"Dataset path  : {full_dataset_path}")
     print(f"Sequence shape: ({MAX_SEQ_FRAMES}, {_BASE_FEATURES})")
-    print(f"Labels found  : {', '.join(sorted(label_dirs))}")
+    print(f"Labels found  : {', '.join(sorted(samples_by_label))}")
+    if processed_entries:
+        print(f"Already indexed samples: {len(processed_entries)}")
     print(f"{'='*60}\n")
 
     total_processed = 0
     total_skipped = 0
+    total_existing = 0
 
-    for label in sorted(label_dirs):
-        label_path = os.path.join(full_dataset_path, label)
+    for label in sorted(samples_by_label):
+        samples = samples_by_label[label]
+        new_samples = [sample for sample in samples if sample['key'] not in processed_set]
+        if not new_samples:
+            total_existing += len(samples)
+            continue
 
-        clip_dirs = sorted(
-            [d for d in os.listdir(label_path)
-             if os.path.isdir(os.path.join(label_path, d)) and d.startswith('clip_')]
-        )
-        image_files = [f for f in os.listdir(label_path)
-                       if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        total_existing += len(samples) - len(new_samples)
+        sample_kind = new_samples[0]['kind']
+        print(f"Processing '{label}': {len(new_samples)} new {sample_kind}(s)")
 
-        if clip_dirs:
-            print(f"Processing '{label}': {len(clip_dirs)} video clips")
-            for clip_name in tqdm(clip_dirs, desc=f"  {label}", unit="clip"):
-                clip_path = os.path.join(label_path, clip_name)
-                seq = _clip_to_sequence(detector, clip_path, use_normalized)
-                if seq is not None:
-                    all_sequences.append(seq)
-                    all_labels.append(label)
-                    total_processed += 1
-                else:
-                    total_skipped += 1
-
-        elif image_files:
-            print(f"Processing '{label}': {len(image_files)} images")
-            for img_file in tqdm(image_files, desc=f"  {label}", unit="img"):
-                img_path = os.path.join(label_path, img_file)
-                image = cv2.imread(img_path)
+        for sample in tqdm(new_samples, desc=f"  {label}", unit=sample_kind):
+            processed_entries.append(sample['key'])
+            if sample['kind'] == 'clip':
+                seq = _clip_to_sequence(detector, sample['path'], use_normalized)
+            else:
+                image = cv2.imread(sample['path'])
                 if image is None:
                     total_skipped += 1
                     continue
                 seq = _static_to_sequence(detector, image, use_normalized)
-                if seq is not None:
-                    all_sequences.append(seq)
-                    all_labels.append(label)
-                    total_processed += 1
-                else:
-                    total_skipped += 1
-        else:
-            print(f"Warning: No images or clips found for label '{label}' — skipping")
+
+            if seq is not None:
+                all_sequences.append(seq)
+                all_labels.append(label)
+                total_processed += 1
+            else:
+                total_skipped += 1
 
     detector.close()
+
+    if total_processed == 0:
+        if processed_entries:
+            _save_manifest(manifest_path, processed_entries)
+            print("No new sequences found. Existing output is already up to date.")
+            return
+        print("Error: No sequences extracted. Please check your dataset.")
+        return
 
     print(f"\n{'='*60}")
     print("Sequence Extraction Summary")
     print(f"{'='*60}")
+    if total_existing > 0:
+        print(f"Total samples already indexed: {total_existing}")
     print(f"Sequences extracted : {total_processed}")
     print(f"Samples skipped     : {total_skipped}")
     if total_processed + total_skipped > 0:
         print(f"Success rate        : {total_processed/(total_processed+total_skipped)*100:.1f}%")
     print(f"{'='*60}\n")
 
-    if total_processed == 0:
-        print("Error: No sequences extracted. Please check your dataset.")
-        return
-
     X_array = np.array(all_sequences, dtype=np.float32)   # (N, MAX_SEQ_FRAMES, _BASE_FEATURES)
     labels_array = np.array(all_labels)
 
+    if os.path.exists(full_output_path):
+        try:
+            existing = np.load(full_output_path, allow_pickle=True)
+            existing_X = existing['X']
+            existing_labels = existing['labels']
+            if existing_X.size > 0:
+                X_array = np.concatenate([existing_X, X_array], axis=0)
+                labels_array = np.concatenate([existing_labels.astype(str), labels_array.astype(str)], axis=0)
+        except Exception:
+            pass
+
     os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
     np.savez_compressed(full_output_path, X=X_array, labels=labels_array)
+    _save_manifest(manifest_path, processed_entries)
 
     print(f"✓ Sequences saved to : {full_output_path}")
     print(f"✓ Array shape        : {X_array.shape}  (samples, frames, features)")

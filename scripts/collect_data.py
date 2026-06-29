@@ -8,11 +8,64 @@ import cv2
 import os
 import sys
 import time
+import shutil
 
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.mediapipe_utils import HandDetector, display_text
+
+
+MIN_BRIGHTNESS = 60.0
+MAX_BRIGHTNESS = 210.0
+MIN_BLUR_SCORE = 70.0
+MIN_HAND_AREA_RATIO = 0.03
+MAX_HAND_AREA_RATIO = 0.45
+
+
+def _hand_bbox_area_ratio(results, frame_shape):
+    """Estimate how much of the frame the first detected hand occupies."""
+    if not results.multi_hand_landmarks:
+        return 0.0
+
+    height, width = frame_shape[:2]
+    x_values = []
+    y_values = []
+    for landmark in results.multi_hand_landmarks[0].landmark:
+        x_values.append(int(landmark.x * width))
+        y_values.append(int(landmark.y * height))
+
+    x_min = max(0, min(x_values))
+    x_max = min(width - 1, max(x_values))
+    y_min = max(0, min(y_values))
+    y_max = min(height - 1, max(y_values))
+
+    hand_area = max(1, x_max - x_min) * max(1, y_max - y_min)
+    return hand_area / float(width * height)
+
+
+def _evaluate_frame_quality(frame, results):
+    """Return whether a frame is good enough to save, plus a short reason."""
+    if not results.multi_hand_landmarks:
+        return False, "No hand detected"
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    brightness = float(gray.mean())
+    blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    area_ratio = _hand_bbox_area_ratio(results, frame.shape)
+
+    if brightness < MIN_BRIGHTNESS:
+        return False, f"Too dark ({brightness:.0f})"
+    if brightness > MAX_BRIGHTNESS:
+        return False, f"Too bright ({brightness:.0f})"
+    if blur_score < MIN_BLUR_SCORE:
+        return False, f"Too blurry ({blur_score:.0f})"
+    if area_ratio < MIN_HAND_AREA_RATIO:
+        return False, f"Hand too small ({area_ratio:.1%})"
+    if area_ratio > MAX_HAND_AREA_RATIO:
+        return False, f"Hand too close ({area_ratio:.1%})"
+
+    return True, f"Good frame | light {brightness:.0f} | blur {blur_score:.0f} | size {area_ratio:.1%}"
 
 
 def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
@@ -94,6 +147,11 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
             instruction = "No hand detected"
             frame = display_text(frame, instruction, position=(10, 70), 
                                color=(0, 0, 255), font_scale=0.6)
+
+        quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+        frame = display_text(frame, f"Quality: {quality_text}", position=(10, 110),
+                             color=(0, 200, 0) if quality_ok else (0, 0, 255),
+                             font_scale=0.5)
         
         # Show quit instruction
         frame = display_text(frame, "Press 'q' to quit", position=(10, 450), 
@@ -106,7 +164,8 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord(' '):  # Space key to capture
-            if results.multi_hand_landmarks:
+            quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+            if quality_ok:
                 # Save the image
                 img_path = os.path.join(full_dataset_path, f"{label}_{count}.jpg")
                 cv2.imwrite(img_path, frame)
@@ -116,7 +175,7 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
                 # Brief pause after capture
                 time.sleep(0.1)
             else:
-                print("No hand detected! Please show your hand to the camera.")
+                print(f"Skipped capture: {quality_text}. Adjust lighting, hand size, or focus and try again.")
         
         elif key == ord('q'):  # Quit
             print("\nData collection stopped by user.")
@@ -210,6 +269,12 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
             frame = display_text(frame, "No hand detected",
                                position=(10, 65), color=(0, 0, 255), font_scale=0.55)
 
+        quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+        frame = display_text(frame, f"Quality: {quality_text}",
+                           position=(10, 100),
+                           color=(0, 200, 0) if quality_ok else (0, 0, 255),
+                           font_scale=0.5)
+
         frame = display_text(frame, "Press 'q' to quit",
                            position=(10, h - 15), color=(255, 255, 255), font_scale=0.5)
 
@@ -221,8 +286,9 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
             break
 
         if key == ord(' '):
-            if not results.multi_hand_landmarks:
-                print("No hand detected — show your hand before recording.")
+            quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+            if not quality_ok:
+                print(f"Recording skipped: {quality_text}. Improve the frame before recording.")
                 continue
 
             # Record clip
@@ -232,6 +298,7 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
 
             print(f"  Recording clip {clip_idx} ...", end="", flush=True)
             frame_num = 0
+            bad_frame_count = 0
 
             while frame_num < clip_frames:
                 ret, clip_frame = cap.read()
@@ -239,7 +306,10 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
                     break
 
                 clip_frame = cv2.flip(clip_frame, 1)
-                clip_frame, _ = detector.find_hands(clip_frame, draw=True)
+                clip_frame, clip_results = detector.find_hands(clip_frame, draw=True)
+                clip_quality_ok, clip_quality_text = _evaluate_frame_quality(clip_frame, clip_results)
+                if not clip_quality_ok:
+                    bad_frame_count += 1
 
                 # Recording indicator
                 cv2.rectangle(clip_frame, (0, 0), (w, h), (0, 0, 200), 3)
@@ -247,6 +317,9 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
                 clip_frame = display_text(clip_frame, rec_text,
                                          position=(10, 30), font_scale=0.9,
                                          color=(0, 0, 255), thickness=2)
+                clip_frame = display_text(clip_frame, f"Quality: {clip_quality_text}",
+                                         position=(10, 70), font_scale=0.5,
+                                         color=(0, 200, 0) if clip_quality_ok else (0, 0, 255))
 
                 cv2.imshow('Video Sequence Collection', clip_frame)
                 cv2.waitKey(1)
@@ -254,6 +327,12 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
                 img_path = os.path.join(clip_dir, f"frame_{frame_num}.jpg")
                 cv2.imwrite(img_path, clip_frame)
                 frame_num += 1
+
+            if frame_num > 0 and bad_frame_count / frame_num > 0.35:
+                shutil.rmtree(clip_dir, ignore_errors=True)
+                print(f" rejected ({bad_frame_count}/{frame_num} low-quality frames)")
+                time.sleep(0.2)
+                continue
 
             clips_collected += 1
             print(f" done ({frame_num} frames saved to {clip_dir})")
