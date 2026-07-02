@@ -1,8 +1,12 @@
 """
-Model Training Script for ISL Gesture Recognition
-This script trains a Bidirectional LSTM on the extracted landmark sequences.
+Model Training Script for ISL Gesture Recognition.
+
+This script now supports two independent training modes:
+- alphabet: static gestures (A-Z and 0-9)
+- word: dynamic word gestures
 """
 
+import argparse
 import os
 import sys
 import numpy as np
@@ -24,41 +28,134 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logger import logger
 
 MAX_SEQ_FRAMES = 30
+STATIC_LABELS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+LEGACY_SEQUENCES = 'dataset/sequences.npz'
+MODE_CONFIGS = {
+    'alphabet': {
+        'dataset': 'dataset/alphabet_sequences.npz',
+        'pkl': 'models/alphabet_model.pkl',
+        'keras': 'models/alphabet_model.keras',
+        'title': 'Static Gesture Recognition',
+    },
+    'word': {
+        'dataset': 'dataset/word_sequences.npz',
+        'pkl': 'models/word_model.pkl',
+        'keras': 'models/word_model.keras',
+        'title': 'Dynamic Word Recognition',
+    },
+}
 
 
-def train_model(sequences_npz='dataset/sequences.npz',
-                model_output='models/gesture_model.pkl',
-                keras_model_output='models/bilstm_model.keras',
+def _normalize_mode(mode):
+    """Return a supported mode name and fail fast on invalid input."""
+    normalized = (mode or 'alphabet').strip().lower()
+    if normalized not in MODE_CONFIGS:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'alphabet' or 'word'.")
+    return normalized
+
+
+def _is_static_label(label):
+    """Return True when the label belongs to the static A-Z / 0-9 task."""
+    label = str(label).strip().upper()
+    return len(label) == 1 and label in STATIC_LABELS
+
+
+def _mode_config(mode):
+    """Resolve paths and human-readable labels for the selected mode."""
+    normalized = _normalize_mode(mode)
+    return normalized, MODE_CONFIGS[normalized]
+
+
+def _is_mode_label(label, mode):
+    """Return True when a label belongs to the requested training task."""
+    return _is_static_label(label) if mode == 'alphabet' else not _is_static_label(label)
+
+
+def _load_sequences_for_mode(script_dir, mode, preferred_rel_path):
+    """
+    Load the dataset for the requested mode.
+
+    If the split file is missing, fall back to the legacy mixed sequences file,
+    filter it down to the requested mode, and materialize the split file so the
+    new layout is created automatically.
+    """
+    preferred_full_path = os.path.join(script_dir, preferred_rel_path)
+    if os.path.exists(preferred_full_path):
+        return preferred_full_path, np.load(preferred_full_path, allow_pickle=True)
+
+    legacy_full_path = os.path.join(script_dir, LEGACY_SEQUENCES)
+    if not os.path.exists(legacy_full_path):
+        return preferred_full_path, None
+
+    legacy_data = np.load(legacy_full_path, allow_pickle=True)
+    raw_labels = legacy_data['labels'].astype(str)
+    keep_mask = np.array([_is_mode_label(label, mode) for label in raw_labels], dtype=bool)
+
+    if not keep_mask.any():
+        return preferred_full_path, None
+
+    filtered_X = legacy_data['X'][keep_mask].astype(np.float32)
+    filtered_labels = raw_labels[keep_mask].astype(str)
+
+    os.makedirs(os.path.dirname(preferred_full_path), exist_ok=True)
+    np.savez_compressed(preferred_full_path, X=filtered_X, labels=filtered_labels)
+    print(f"Warning: {os.path.basename(preferred_full_path)} was missing, so it was built from the legacy mixed dataset.")
+    print(f"  Saved filtered subset to: {preferred_full_path}")
+    return preferred_full_path, np.load(preferred_full_path, allow_pickle=True)
+
+
+def train_model(mode='alphabet',
+                sequences_npz=None,
+                model_output=None,
+                keras_model_output=None,
                 test_size=0.2, random_state=42):
     """
     Train a Bidirectional LSTM classifier on the landmark sequences dataset.
 
     Args:
-        sequences_npz (str): Path to the sequences .npz file produced by extract_landmarks.py
-        model_output (str): Path to save the metadata pickle
-        keras_model_output (str): Path to save the Keras model
+        mode (str): 'alphabet' for static gestures or 'word' for dynamic words
+        sequences_npz (str): Optional path to the sequences .npz file
+        model_output (str): Optional path to save the metadata pickle
+        keras_model_output (str): Optional path to save the Keras model
         test_size (float): Proportion of dataset to use as test set
         random_state (int): Random seed for reproducibility
     """
+    mode, config = _mode_config(mode)
+
+    sequences_npz = sequences_npz or config['dataset']
+    model_output = model_output or config['pkl']
+    keras_model_output = keras_model_output or config['keras']
+
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    full_npz_path = os.path.join(script_dir, sequences_npz)
     full_model_path = os.path.join(script_dir, model_output)
     full_keras_path = os.path.join(script_dir, keras_model_output)
 
-    if not os.path.exists(full_npz_path):
+    full_npz_path, data = _load_sequences_for_mode(script_dir, mode, sequences_npz)
+    if data is None:
         print(f"Error: Sequences file not found: {full_npz_path}")
-        print("Please run extract_landmarks.py first and choose sequence mode.")
+        if mode == 'alphabet':
+            print("Please run extract_landmarks.py with the static/alphabet mode first.")
+        else:
+            print("Please run extract_landmarks.py with the dynamic/word mode first.")
         return
 
     print(f"\n{'='*60}")
-    print("Training ISL Gesture Recognition - Bidirectional LSTM")
+    print(f"Training ISL {config['title']} - Bidirectional LSTM")
     print(f"{'='*60}\n")
 
     # ── Load dataset ──────────────────────────────────────────────
     print(f"Loading sequences from: {full_npz_path}")
-    data = np.load(full_npz_path, allow_pickle=True)
     X = data['X'].astype(np.float32)          # (N, SEQ_LEN, FEAT_SIZE)
     raw_labels = data['labels'].astype(str)
+
+    invalid_labels = sorted({label for label in np.unique(raw_labels) if not _is_mode_label(label, mode)})
+
+    if invalid_labels:
+        print("Error: The selected dataset contains labels from the wrong task.")
+        print(f"  Mode   : {mode}")
+        print(f"  Invalid: {', '.join(invalid_labels)}")
+        print("Please regenerate the dataset with the matching extraction mode.")
+        return
 
     print(f"✓ Dataset loaded: {X.shape[0]} samples, "
           f"sequence length {X.shape[1]}, {X.shape[2]} features per frame")
@@ -186,7 +283,7 @@ def train_model(sequences_npz='dataset/sequences.npz',
 
     print("\nConfusion Matrix (Test Set):")
     print("=" * 60)
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred, labels=np.arange(num_classes))
     print(cm)
 
     cm_off = cm.copy()
@@ -218,7 +315,8 @@ def train_model(sequences_npz='dataset/sequences.npz',
 
     model_data = {
         'model_type': 'BiLSTM',
-        'keras_model_path': 'models/bilstm_model.keras',
+        'gesture_mode': mode,
+        'keras_model_path': keras_model_output,
         'label_encoder': label_encoder,
         'index_to_class': index_to_class,
         'class_to_index': class_to_index,
@@ -228,6 +326,8 @@ def train_model(sequences_npz='dataset/sequences.npz',
         'uses_engineered_features': True,
         'test_accuracy': test_accuracy,
         'val_accuracy': best_val_acc,
+        'confusion_matrix': cm.tolist(),
+        'confusion_matrix_labels': index_to_class,
     }
 
     with open(full_model_path, 'wb') as f:
@@ -239,6 +339,7 @@ def train_model(sequences_npz='dataset/sequences.npz',
     print(f"  - Bidirectional LSTM (2 layers)")
     print(f"  - Label encoder ({num_classes} classes)")
     print(f"  - Input shape: ({seq_len}, {feat_size})")
+    print(f"  - Mode: {mode}")
     print(f"  - Validation accuracy: {best_val_acc:.2%}")
     print(f"  - Test accuracy: {test_accuracy:.2%}")
     print()
@@ -252,21 +353,46 @@ def main():
     """
     Main function to run the model training script.
     """
+    parser = argparse.ArgumentParser(description="Train ISL gesture models")
+    parser.add_argument(
+        '--mode',
+        choices=sorted(MODE_CONFIGS.keys()),
+        default=None,
+        help="Training mode: alphabet for static gestures or word for dynamic words",
+    )
+    parser.add_argument(
+        '--test-size',
+        type=float,
+        default=None,
+        help="Optional test set size. If omitted, the script asks interactively.",
+    )
+    args = parser.parse_args()
+
+    if args.mode is None:
+        print("\nChoose training mode:")
+        print("  1. Static gestures  - alphabet_model")
+        print("  2. Dynamic words    - word_model")
+        mode_choice = input("Training mode (1/2, default: 2): ").strip()
+        args.mode = 'alphabet' if mode_choice == '1' else 'word'
+
     print("\n" + "=" * 60)
-    print("ISL Gesture Recognition - Bidirectional LSTM Training")
+    print(f"ISL Gesture Recognition - {MODE_CONFIGS[args.mode]['title']}")
     print("=" * 60)
 
-    test_size_input = input("\nEnter test set size (0-1, default: 0.2): ").strip()
-    try:
-        test_size = float(test_size_input) if test_size_input else 0.2
-        if not (0 < test_size < 1):
-            print("Warning: Test size must be between 0 and 1. Using default (0.2)")
+    if args.test_size is None:
+        test_size_input = input("\nEnter test set size (0-1, default: 0.2): ").strip()
+        try:
+            test_size = float(test_size_input) if test_size_input else 0.2
+            if not (0 < test_size < 1):
+                print("Warning: Test size must be between 0 and 1. Using default (0.2)")
+                test_size = 0.2
+        except ValueError:
+            print("Warning: Invalid input. Using default test size (0.2)")
             test_size = 0.2
-    except ValueError:
-        print("Warning: Invalid input. Using default test size (0.2)")
-        test_size = 0.2
+    else:
+        test_size = args.test_size
 
-    train_model(test_size=test_size)
+    train_model(mode=args.mode, test_size=test_size)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 """
-Landmark Extraction Script for ISL Gesture Recognition
-This script reads images from the dataset and extracts hand landmarks using MediaPipe.
-The landmarks are saved to a CSV file for training.
+Landmark Extraction Script for ISL Gesture Recognition.
+
+This script now supports separate extraction outputs for:
+- alphabet: static gestures (A-Z and 0-9)
+- word: dynamic word gestures
 """
 
+import argparse
 import cv2
 import json
 import os
@@ -25,6 +28,11 @@ UNIFIED_FEATURES = _BASE_FEATURES * 2
 
 # Maximum sequence length for BiLSTM training (frames per clip)
 MAX_SEQ_FRAMES = 30
+STATIC_LABELS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+MODE_OUTPUTS = {
+    'alphabet': 'dataset/alphabet_sequences.npz',
+    'word': 'dataset/word_sequences.npz',
+}
 
 
 def _numeric_sort_key(name):
@@ -40,6 +48,37 @@ def _numeric_sort_key(name):
 def _sample_key(label, item_name):
     """Create a stable relative key for a raw dataset sample."""
     return f"{label}/{item_name}"
+
+
+def _normalize_mode(mode):
+    """Return a supported extraction mode."""
+    normalized = (mode or 'alphabet').strip().lower()
+    if normalized not in MODE_OUTPUTS:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'alphabet' or 'word'.")
+    return normalized
+
+
+def _is_static_label(label):
+    """Return True when a label belongs to the static gesture set."""
+    label = str(label).strip().upper()
+    return len(label) == 1 and label in STATIC_LABELS
+
+
+def _label_matches_mode(label, mode):
+    """Decide whether a label belongs to the requested training task."""
+    is_static = _is_static_label(label)
+    if mode == 'alphabet':
+        return is_static
+    return not is_static
+
+
+def _filter_samples_by_mode(samples_by_label, mode):
+    """Keep only the labels that belong to the selected task."""
+    filtered = {}
+    for label, samples in samples_by_label.items():
+        if _label_matches_mode(label, mode):
+            filtered[label] = samples
+    return filtered
 
 
 def _manifest_path(output_path):
@@ -151,24 +190,42 @@ def _bootstrap_processed_entries(samples_by_label, existing_counts):
 
 
 def _frame_feature(detector, image, use_normalized):
-    """Extract engineered features from a single image, returns None on failure."""
+    """Extract engineered features from a single image with debugging."""
+
     enhanced = cv2.convertScaleAbs(image, alpha=1.5, beta=50)
+
     _, results = detector.find_hands(enhanced, draw=False)
+
     landmarks = (
         detector.extract_landmarks_normalized(results, enhanced.shape)
-        if use_normalized else
-        detector.extract_landmarks(results)
+        if use_normalized
+        else detector.extract_landmarks(results)
     )
+
     if landmarks is None:
         _, results = detector.find_hands(image, draw=False)
+
         landmarks = (
             detector.extract_landmarks_normalized(results, image.shape)
-            if use_normalized else
-            detector.extract_landmarks(results)
+            if use_normalized
+            else detector.extract_landmarks(results)
         )
-    if landmarks is not None:
-        return compute_engineered_features(landmarks)
-    return None
+
+    if landmarks is None:
+        os.makedirs("failed_debug", exist_ok=True)
+        import time
+        filename = os.path.join("failed_debug", f"{time.time_ns()}.jpg")
+        cv2.imwrite(filename, image)
+        print(f"❌ Saved failed image -> {filename}")
+        return None
+
+    features = compute_engineered_features(landmarks)
+
+    if features is None:
+        print("❌ Feature engineering failed")
+        return None
+
+    return features
 
 
 def _clip_to_feature(detector, clip_dir, use_normalized):
@@ -329,7 +386,6 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
         print(f"Processing label '{label}': {len(new_samples)} new {sample_kind}(s)")
 
         for sample in tqdm(new_samples, desc=f"  {label}", unit=sample_kind):
-            processed_entries.append(sample['key'])
             if sample['kind'] == 'clip':
                 feat = _clip_to_feature(detector, sample['path'], use_normalized)
             else:
@@ -341,6 +397,7 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
                 feat = _static_to_feature(detector, image, use_normalized)
 
             if feat is not None:
+                processed_entries.append(sample['key'])
                 all_landmarks.append(feat)
                 all_labels.append(label)
                 total_processed += 1
@@ -432,8 +489,9 @@ def extract_landmarks_from_dataset(dataset_path='dataset/raw_images',
 
 
 def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
-                                   output_npz='dataset/sequences.npz',
-                                   use_normalized=True):
+                                   output_npz=None,
+                                   use_normalized=True,
+                                   mode='alphabet'):
     """
     Extract per-frame landmark sequences from all clips/images and save as a
     compressed .npz file for Bidirectional LSTM training.
@@ -442,6 +500,9 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
         X      : float32 array of shape (N, MAX_SEQ_FRAMES, _BASE_FEATURES)
         labels : str array of shape (N,)
     """
+    mode = _normalize_mode(mode)
+    output_npz = output_npz or MODE_OUTPUTS[mode]
+
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     full_dataset_path = os.path.join(script_dir, dataset_path)
     full_output_path = os.path.join(script_dir, output_npz)
@@ -458,9 +519,9 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
         min_tracking_confidence=0.1
     )
 
-    samples_by_label = _scan_dataset(full_dataset_path)
+    samples_by_label = _filter_samples_by_mode(_scan_dataset(full_dataset_path), mode)
     if not samples_by_label:
-        print(f"Error: No label directories found in {full_dataset_path}")
+        print(f"Error: No label directories found for mode '{mode}' in {full_dataset_path}")
         return
 
     processed_entries = _load_manifest(manifest_path)
@@ -475,10 +536,11 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
     all_labels = []
 
     print(f"\n{'='*60}")
-    print("Extracting Landmark Sequences (for BiLSTM)")
+    print(f"Extracting Landmark Sequences ({mode})")
     print(f"{'='*60}")
     print(f"Dataset path  : {full_dataset_path}")
     print(f"Sequence shape: ({MAX_SEQ_FRAMES}, {_BASE_FEATURES})")
+    print(f"Mode          : {mode}")
     print(f"Labels found  : {', '.join(sorted(samples_by_label))}")
     if processed_entries:
         print(f"Already indexed samples: {len(processed_entries)}")
@@ -500,7 +562,6 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
         print(f"Processing '{label}': {len(new_samples)} new {sample_kind}(s)")
 
         for sample in tqdm(new_samples, desc=f"  {label}", unit=sample_kind):
-            processed_entries.append(sample['key'])
             if sample['kind'] == 'clip':
                 seq = _clip_to_sequence(detector, sample['path'], use_normalized)
             else:
@@ -511,6 +572,7 @@ def extract_sequences_from_dataset(dataset_path='dataset/raw_images',
                 seq = _static_to_sequence(detector, image, use_normalized)
 
             if seq is not None:
+                processed_entries.append(sample['key'])
                 all_sequences.append(seq)
                 all_labels.append(label)
                 total_processed += 1
@@ -566,27 +628,61 @@ def main():
     """
     Main function to run the landmark extraction script.
     """
+    parser = argparse.ArgumentParser(description="Extract ISL landmarks")
+    parser.add_argument(
+        '--mode',
+        choices=sorted(list(MODE_OUTPUTS.keys()) + ['csv']),
+        default=None,
+        help="Extraction mode: alphabet, word, or csv for the legacy flat dataset",
+    )
+    parser.add_argument(
+        '--normalized',
+        action='store_true',
+        help="Use normalized landmarks without prompting",
+    )
+    parser.add_argument(
+        '--raw',
+        action='store_true',
+        help="Use raw landmarks without prompting",
+    )
+    args = parser.parse_args()
+
     print("\n" + "="*60)
     print("ISL Gesture Recognition - Landmark Extraction")
     print("="*60)
 
-    print("\nExtraction mode:")
-    print("  1) Sequence (.npz) — for Bidirectional LSTM  [default]")
-    print("  2) Flat CSV        — for Random Forest / legacy models")
-    mode_choice = input("Choose mode (1/2, default 1): ").strip()
+    if args.mode is None:
+        print("\nExtraction mode:")
+        print("  1) Static gestures (alphabet)")
+        print("  2) Dynamic words")
+        print("  3) Legacy flat CSV")
+        mode_choice = input("Choose mode (1/2/3, default 1): ").strip()
+        mode = 'csv' if mode_choice == '3' else ('word' if mode_choice == '2' else 'alphabet')
+    else:
+        mode = args.mode.lower()
+        if mode not in MODE_OUTPUTS and mode != 'csv':
+            raise ValueError(f"Unsupported mode: {args.mode}")
 
-    normalize_choice = input("Use normalized landmarks? (Y/n): ").strip().lower()
-    use_normalized = normalize_choice != 'n'
+    if args.normalized and args.raw:
+        print("Warning: --normalized and --raw were both set. Using normalized landmarks.")
+        use_normalized = True
+    elif args.normalized:
+        use_normalized = True
+    elif args.raw:
+        use_normalized = False
+    else:
+        normalize_choice = input("Use normalized landmarks? (Y/n): ").strip().lower()
+        use_normalized = normalize_choice != 'n'
 
     if use_normalized:
         print("Using normalized landmarks (recommended)")
     else:
         print("Using raw landmarks")
 
-    if mode_choice == '2':
+    if mode == 'csv':
         extract_landmarks_from_dataset(use_normalized=use_normalized)
     else:
-        extract_sequences_from_dataset(use_normalized=use_normalized)
+        extract_sequences_from_dataset(use_normalized=use_normalized, mode=mode)
 
 
 if __name__ == "__main__":

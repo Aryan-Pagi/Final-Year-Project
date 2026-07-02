@@ -26,6 +26,11 @@ from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_e
 from utils.word_builder import WordBuilder, is_word_label
 from utils.logger import logger
 
+STATIC_LABELS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+ALPHABET_MODEL_PATH = 'models/alphabet_model.pkl'
+WORD_MODEL_PATH = 'models/word_model.pkl'
+LEGACY_MODEL_PATH = 'models/gesture_model.pkl'
+
 
 def _dedupe_consecutive_words(text):
     """Remove consecutive duplicate words: 'YOU YOU HELP' -> 'YOU HELP'."""
@@ -127,7 +132,7 @@ def normalize_sentence_text(text, add_terminal_punctuation=False):
     return cleaned
 
 
-def load_model(model_path='models/gesture_model.pkl'):
+def load_model(model_path=LEGACY_MODEL_PATH):
     """
     Load the trained model and label encoder.
 
@@ -137,7 +142,24 @@ def load_model(model_path='models/gesture_model.pkl'):
                'feature_size' keys (only populated for BiLSTM models).
     """
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    full_model_path = os.path.join(script_dir, model_path)
+    resolved_model_path = model_path
+    candidate_paths = [resolved_model_path]
+
+    # Letter-based modes should keep working even when the split alphabet bundle
+    # has not been created yet.
+    if os.path.basename(resolved_model_path) == os.path.basename(ALPHABET_MODEL_PATH):
+        candidate_paths.append(LEGACY_MODEL_PATH)
+
+    full_model_path = None
+    for candidate_path in candidate_paths:
+        candidate_full_path = os.path.join(script_dir, candidate_path)
+        if os.path.exists(candidate_full_path):
+            resolved_model_path = candidate_path
+            full_model_path = candidate_full_path
+            break
+
+    if full_model_path is None:
+        full_model_path = os.path.join(script_dir, resolved_model_path)
 
     if not os.path.exists(full_model_path):
         print(f"Error: Model file not found: {full_model_path}")
@@ -154,21 +176,27 @@ def load_model(model_path='models/gesture_model.pkl'):
         model_type = model_data.get('model_type', 'sklearn')
 
         index_to_class = model_data.get('index_to_class', list(getattr(label_encoder, 'classes_', [])))
+        default_keras_rel = os.path.splitext(resolved_model_path)[0] + '.keras'
 
         model_meta = {
             'model_type': model_type,
             'max_seq_frames': model_data.get('max_seq_frames', 30),
             'feature_size': model_data.get('feature_size', 93),
             'index_to_class': index_to_class,
+            'model_path': resolved_model_path,
         }
 
         if model_type == 'BiLSTM':
             import tensorflow as tf
-            keras_rel_path = model_data.get('keras_model_path', 'models/bilstm_model.keras')
+            keras_rel_path = model_data.get('keras_model_path', default_keras_rel)
             keras_full_path = os.path.join(script_dir, keras_rel_path)
             if not os.path.exists(keras_full_path):
-                logger.error(f"Error: Keras model file not found: {keras_full_path}")
-                return None, None, False, None, {}
+                legacy_keras_path = os.path.join(script_dir, default_keras_rel)
+                if os.path.exists(legacy_keras_path):
+                    keras_full_path = legacy_keras_path
+                else:
+                    logger.error(f"Error: Keras model file not found: {keras_full_path}")
+                    return None, None, False, None, {}
             model = tf.keras.models.load_model(keras_full_path)
             logger.info("✓ BiLSTM model loaded successfully")
         else:
@@ -186,39 +214,79 @@ def load_model(model_path='models/gesture_model.pkl'):
         return None, None, False, None, {}
 
 
-def predict_realtime(model_path='models/gesture_model.pkl', 
+def _predict_sequence(model, seq_buffer, feat_size, max_seq_frames):
+    """Convert the rolling frame buffer into model input and return probabilities."""
+    seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
+    recent = list(seq_buffer)
+    if recent:
+        seq[max_seq_frames - len(recent):] = np.array(recent, dtype=np.float32)
+    proba = model.predict(seq[np.newaxis], verbose=0)[0]
+    pred_idx = int(np.argmax(proba))
+    confidence = float(proba[pred_idx])
+    return pred_idx, confidence
+
+
+def _detect_static_motion(motion_values, movement_threshold=0.015, static_ratio_threshold=0.7):
+    """Classify the current hand stream as STATIC or DYNAMIC using landmark motion."""
+    if not motion_values:
+        return 'STATIC'
+
+    static_votes = sum(1 for value in motion_values if value <= movement_threshold)
+    static_ratio = static_votes / max(len(motion_values), 1)
+    return 'STATIC' if static_ratio >= static_ratio_threshold else 'DYNAMIC'
+
+
+def _movement_score(previous_landmarks, current_landmarks):
+    """Compute mean landmark movement between consecutive frames."""
+    if previous_landmarks is None or current_landmarks is None:
+        return None
+    previous = np.asarray(previous_landmarks, dtype=np.float32)
+    current = np.asarray(current_landmarks, dtype=np.float32)
+    if previous.shape != current.shape:
+        return None
+    return float(np.mean(np.abs(current - previous)))
+
+
+def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
+                    word_model_path=WORD_MODEL_PATH,
                     use_normalized=True,
                     confidence_threshold=0.7):
     """
     Run real-time gesture prediction using webcam.
     
     Args:
-        model_path (str): Path to the trained model
+        alphabet_model_path (str): Path to the static gesture model bundle
+        word_model_path (str): Path to the dynamic word model bundle
         use_normalized (bool): Whether to use normalized landmarks
         confidence_threshold (float): Minimum confidence for displaying prediction
     """
-    # Load the model
+    # Load both independent models up front so the runtime can switch tasks.
     print(f"\n{'='*60}")
-    print("Loading Model...")
+    print("Loading Models...")
     print(f"{'='*60}\n")
     
-    model, label_encoder, uses_engineered, num_features, model_meta = load_model(model_path)
+    alphabet_model, alphabet_label_encoder, alphabet_uses_engineered, alphabet_num_features, alphabet_meta = load_model(alphabet_model_path)
+    word_model, word_label_encoder, word_uses_engineered, word_num_features, word_meta = load_model(word_model_path)
 
-    if model is None or label_encoder is None:
+    if (alphabet_model is None or alphabet_label_encoder is None
+            or word_model is None or word_label_encoder is None):
+        print("Error: Both alphabet and word models must be available before realtime prediction.")
         return
 
-    is_bilstm = model_meta.get('model_type') == 'BiLSTM'
-    max_seq_frames = model_meta.get('max_seq_frames', 30)
-    feat_size = model_meta.get('feature_size', 93)
+    max_seq_frames = alphabet_meta.get('max_seq_frames', 30)
+    feat_size = alphabet_meta.get('feature_size', 93)
+    if word_meta.get('max_seq_frames', max_seq_frames) != max_seq_frames:
+        print("Warning: The alphabet and word models use different sequence lengths. Using the alphabet model length.")
+    if word_meta.get('feature_size', feat_size) != feat_size:
+        print("Warning: The alphabet and word models use different feature sizes. Using the alphabet model size.")
 
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm
-                    and num_features is not None
-                    and num_features > base_feat_count)
-    TIME_WINDOW = 1.5  # seconds (used only in unified_mode)
-    feat_window = deque()     # (timestamp, array) pairs — unified_mode only
-    seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
+    # Motion gate thresholds are intentionally simple and conservative.
+    movement_threshold = 0.015 if use_normalized else 0.04
+    static_ratio_threshold = 0.7
+    use_engineered_features = alphabet_uses_engineered or word_uses_engineered
+    seq_buffer = deque(maxlen=max_seq_frames)
+    motion_values = deque(maxlen=max_seq_frames - 1)
+    previous_raw_landmarks = None
 
     print(f"\n{'='*60}")
     print("Starting Real-time Prediction")
@@ -226,7 +294,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print("Instructions:")
     print("  - Show your hand(s) to the camera")
     print("  - Up to 2 hands can be detected")
-    print("  - The predicted gesture will be displayed")
+    print("  - The system will auto-select the static or word model")
     print("  - Press 'q' to quit")
     print("  - Press 'f' to toggle FPS display")
     print(f"{'='*60}\n")
@@ -255,6 +323,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     # For prediction smoothing
     prediction_history = []
     history_size = 7
+    last_detected_type = None
     
     print("Webcam started. Showing predictions...\n")
     
@@ -295,48 +364,27 @@ def predict_realtime(model_path='models/gesture_model.pkl',
         
         # Predict gesture if hand is detected
         if landmarks is not None:
-            # Apply feature engineering if model expects it
-            if uses_engineered:
-                landmarks = compute_engineered_features(landmarks)
+            motion_score = _movement_score(previous_raw_landmarks, landmarks)
+            if motion_score is not None:
+                motion_values.append(motion_score)
+            previous_raw_landmarks = np.asarray(landmarks, dtype=np.float32)
 
-            if is_bilstm:
-                seq_buffer.append(landmarks.astype(np.float32))
-                seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
-                recent = list(seq_buffer)
-                seq[max_seq_frames - len(recent):] = np.array(recent)
-                proba = model.predict(seq[np.newaxis], verbose=0)[0]
-                pred_idx = int(np.argmax(proba))
-                confidence = float(proba[pred_idx])
-                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
-                predicted_label = index_to_class[pred_idx]
-            elif unified_mode:
-                # Time-based sliding window (mean+std)
-                _now = time.time()
-                feat_window.append((_now, landmarks))
-                while feat_window and (_now - feat_window[0][0]) > TIME_WINDOW:
-                    feat_window.popleft()
-                arr = np.array([f for _, f in feat_window])
-                lm = np.concatenate([arr.mean(axis=0), arr.std(axis=0)])
-                prediction = model.predict(lm.reshape(1, -1))[0]
-                prediction_proba = model.predict_proba(lm.reshape(1, -1))[0]
-                confidence = prediction_proba[prediction]
-                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
-                # prediction may be an integer index
-                try:
-                    predicted_label = index_to_class[int(prediction)]
-                except Exception:
-                    # fallback to label_encoder
-                    predicted_label = label_encoder.inverse_transform([prediction])[0]
-            else:
-                landmarks_reshaped = landmarks.reshape(1, -1)
-                prediction = model.predict(landmarks_reshaped)[0]
-                prediction_proba = model.predict_proba(landmarks_reshaped)[0]
-                confidence = prediction_proba[prediction]
-                index_to_class = model_meta.get('index_to_class') or list(label_encoder.classes_)
-                try:
-                    predicted_label = index_to_class[int(prediction)]
-                except Exception:
-                    predicted_label = label_encoder.inverse_transform([prediction])[0]
+            # Preserve the engineered feature representation used by both models.
+            features = compute_engineered_features(landmarks) if use_engineered_features else landmarks
+            seq_buffer.append(np.asarray(features, dtype=np.float32))
+
+            detected_type = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            if detected_type != last_detected_type:
+                prediction_history.clear()
+                last_detected_type = detected_type
+
+            active_model = alphabet_model if detected_type == 'STATIC' else word_model
+            active_label_encoder = alphabet_label_encoder if detected_type == 'STATIC' else word_label_encoder
+            active_meta = alphabet_meta if detected_type == 'STATIC' else word_meta
+
+            pred_idx, confidence = _predict_sequence(active_model, seq_buffer, feat_size, max_seq_frames)
+            index_to_class = active_meta.get('index_to_class') or list(active_label_encoder.classes_)
+            predicted_label = index_to_class[pred_idx]
 
             # Add to prediction history for smoothing
             prediction_history.append(predicted_label)
@@ -351,28 +399,35 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                 smoothed_prediction = predicted_label
             
             # Display prediction
-            gesture_type = "Word" if is_word_label(smoothed_prediction) else "Letter"
             if confidence >= confidence_threshold:
-                prediction_text = f"{handedness} {gesture_type}: {smoothed_prediction}"
+                type_text = f"Detected Type: {detected_type}"
+                prediction_text = f"Prediction: {smoothed_prediction}"
                 confidence_text = f"Confidence: {confidence:.2%}"
 
                 # Display with high confidence color
+                frame = display_text(frame, type_text,
+                                   position=(10, 30), font_scale=1.0,
+                                   color=(0, 255, 0), thickness=2)
                 frame = display_text(frame, prediction_text,
-                                   position=(10, 30), font_scale=1.2,
+                                   position=(10, 70), font_scale=1.2,
                                    color=(0, 255, 0), thickness=2)
                 frame = display_text(frame, confidence_text,
-                                   position=(10, 70), font_scale=0.7,
+                                   position=(10, 110), font_scale=0.7,
                                    color=(0, 255, 0), thickness=2)
             else:
                 # Low confidence
-                prediction_text = f"{handedness} {gesture_type}: {smoothed_prediction} (?)"
+                type_text = f"Detected Type: {detected_type}"
+                prediction_text = f"Prediction: {smoothed_prediction} (?)"
                 confidence_text = f"Confidence: {confidence:.2%} (Low)"
 
+                frame = display_text(frame, type_text,
+                                   position=(10, 30), font_scale=1.0,
+                                   color=(0, 165, 255), thickness=2)
                 frame = display_text(frame, prediction_text,
-                                   position=(10, 30), font_scale=1.2,
+                                   position=(10, 70), font_scale=1.2,
                                    color=(0, 165, 255), thickness=2)
                 frame = display_text(frame, confidence_text,
-                                   position=(10, 70), font_scale=0.7,
+                                   position=(10, 110), font_scale=0.7,
                                    color=(0, 165, 255), thickness=2)
         else:
             # No hand detected
@@ -380,10 +435,10 @@ def predict_realtime(model_path='models/gesture_model.pkl',
                                position=(10, 30), font_scale=1, 
                                color=(0, 0, 255), thickness=2)
             prediction_history.clear()
-            if is_bilstm:
-                seq_buffer.clear()
-            else:
-                feat_window.clear()
+            seq_buffer.clear()
+            motion_values.clear()
+            previous_raw_landmarks = None
+            last_detected_type = None
         curr_time = time.time()
         fps = get_fps(prev_time, curr_time)
         prev_time = curr_time
@@ -418,7 +473,7 @@ def predict_realtime(model_path='models/gesture_model.pkl',
     print("✓ Real-time prediction stopped\n")
 
 
-def predict_words(model_path='models/gesture_model.pkl',
+def predict_words(model_path=ALPHABET_MODEL_PATH,
                   use_normalized=True,
                   confidence_threshold=0.7,
                   hold_duration=1.0):
@@ -458,7 +513,7 @@ def predict_words(model_path='models/gesture_model.pkl',
     seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
 
     print(f"\n{'='*60}")
-    print("Starting Word Formation Mode")
+    print("Starting Word Recognition Mode")
     print(f"{'='*60}")
     print("Instructions:")
     print("  - Hold a gesture steadily to confirm it")
@@ -648,10 +703,11 @@ def predict_words(model_path='models/gesture_model.pkl',
     cap.release()
     cv2.destroyAllWindows()
     detector.close()
-    print("✓ Word formation mode stopped\n")
+    print("✓ Word recognition mode stopped\n")
 
 
-def predict_sentence(model_path='models/gesture_model.pkl',
+def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
+                     word_model_path=WORD_MODEL_PATH,
                      use_normalized=True,
                      confidence_threshold=0.7,
                      hold_duration=1.0,
@@ -672,22 +728,25 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("Loading Model...")
     print(f"{'='*60}\n")
 
-    model, label_encoder, uses_engineered, num_features, model_meta = load_model(model_path)
-    if model is None or label_encoder is None:
+    alphabet_model, alphabet_label_encoder, alphabet_uses_engineered, alphabet_num_features, alphabet_meta = load_model(alphabet_model_path)
+    word_model, word_label_encoder, word_uses_engineered, word_num_features, word_meta = load_model(word_model_path)
+    if (alphabet_model is None or alphabet_label_encoder is None
+            or word_model is None or word_label_encoder is None):
         return
 
-    is_bilstm = model_meta.get('model_type') == 'BiLSTM'
-    max_seq_frames = model_meta.get('max_seq_frames', 30)
-    feat_size = model_meta.get('feature_size', 93)
+    max_seq_frames = alphabet_meta.get('max_seq_frames', 30)
+    feat_size = alphabet_meta.get('feature_size', 93)
+    if word_meta.get('max_seq_frames', max_seq_frames) != max_seq_frames:
+        print("Warning: The alphabet and word models use different sequence lengths. Using the alphabet model length.")
+    if word_meta.get('feature_size', feat_size) != feat_size:
+        print("Warning: The alphabet and word models use different feature sizes. Using the alphabet model size.")
 
-    from utils.mediapipe_utils import get_engineered_feature_names
-    base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (not is_bilstm
-                    and num_features is not None
-                    and num_features > base_feat_count)
-    TIME_WINDOW = 1.5  # seconds — used in unified_mode only
-    feat_window = deque()     # (timestamp, array) pairs — unified_mode only
-    seq_buffer = deque(maxlen=max_seq_frames)  # feature arrays — BiLSTM only
+    movement_threshold = 0.015 if use_normalized else 0.04
+    static_ratio_threshold = 0.7
+    use_engineered_features = alphabet_uses_engineered or word_uses_engineered
+    seq_buffer = deque(maxlen=max_seq_frames)
+    motion_values = deque(maxlen=max_seq_frames - 1)
+    previous_raw_landmarks = None
 
     print(f"\n{'='*60}")
     print("Starting Sentence Formation Mode")
@@ -740,41 +799,32 @@ def predict_sentence(model_path='models/gesture_model.pkl',
 
         if landmarks is not None:
             no_hand_since = None  # hand is present — reset absence timer
-            if uses_engineered:
+            motion_score = _movement_score(previous_raw_landmarks, landmarks)
+            if motion_score is not None:
+                motion_values.append(motion_score)
+            previous_raw_landmarks = np.asarray(landmarks, dtype=np.float32)
+
+            if use_engineered_features:
                 landmarks = compute_engineered_features(landmarks)
 
-            if is_bilstm:
-                seq_buffer.append(landmarks.astype(np.float32))
-                seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
-                recent = list(seq_buffer)
-                seq[max_seq_frames - len(recent):] = np.array(recent)
-                proba = model.predict(seq[np.newaxis], verbose=0)[0]
-                pred_idx = int(np.argmax(proba))
-                confidence = float(proba[pred_idx])
-                predicted_label = label_encoder.inverse_transform([pred_idx])[0]
-            elif unified_mode:
-                _now = time.time()
-                feat_window.append((_now, landmarks))
-                while feat_window and (_now - feat_window[0][0]) > TIME_WINDOW:
-                    feat_window.popleft()
-                arr = np.array([f for _, f in feat_window])
-                lm = np.concatenate([arr.mean(axis=0), arr.std(axis=0)])
-                pred_enc = model.predict(lm.reshape(1, -1))[0]
-                prob = model.predict_proba(lm.reshape(1, -1))[0]
-                confidence = prob[pred_enc]
-                predicted_label = label_encoder.inverse_transform([pred_enc])[0]
-            else:
-                lm_r = landmarks.reshape(1, -1)
-                pred_enc = model.predict(lm_r)[0]
-                prob = model.predict_proba(lm_r)[0]
-                confidence = prob[pred_enc]
-                predicted_label = label_encoder.inverse_transform([pred_enc])[0]
+            detected_type = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            active_model = alphabet_model if detected_type == 'STATIC' else word_model
+            active_label_encoder = alphabet_label_encoder if detected_type == 'STATIC' else word_label_encoder
+            active_meta = alphabet_meta if detected_type == 'STATIC' else word_meta
+
+            seq_buffer.append(landmarks.astype(np.float32))
+            seq = np.zeros((max_seq_frames, feat_size), dtype=np.float32)
+            recent = list(seq_buffer)
+            seq[max_seq_frames - len(recent):] = np.array(recent)
+            proba = active_model.predict(seq[np.newaxis], verbose=0)[0]
+            pred_idx = int(np.argmax(proba))
+            confidence = float(proba[pred_idx])
+            predicted_label = (active_meta.get('index_to_class') or list(active_label_encoder.classes_))[pred_idx]
         else:
             # Hand absent
-            if is_bilstm:
-                seq_buffer.clear()
-            else:
-                feat_window.clear()
+            seq_buffer.clear()
+            motion_values.clear()
+            previous_raw_landmarks = None
             word_builder._reset_tracking()
             if word_builder.current_word:
                 if no_hand_since is None:
@@ -794,13 +844,13 @@ def predict_sentence(model_path='models/gesture_model.pkl',
 
         # Current gesture (top left)
         if predicted_label and confidence >= confidence_threshold:
-            g_type = "Word" if is_word_label(predicted_label) else "Letter"
+            g_type = "Word" if detected_type == 'DYNAMIC' or is_word_label(predicted_label) else "Letter"
             frame = display_text(frame, f"{g_type}: {predicted_label}",
                                  (10, 30), font_scale=1.0, color=(0, 255, 0), thickness=2)
             frame = display_text(frame, f"{confidence:.0%}",
                                  (10, 65), font_scale=0.6, color=(0, 255, 0), thickness=1)
         elif predicted_label:
-            g_type = "Word" if is_word_label(predicted_label) else "Letter"
+            g_type = "Word" if detected_type == 'DYNAMIC' or is_word_label(predicted_label) else "Letter"
             frame = display_text(frame, f"{g_type}: {predicted_label} (low)",
                                  (10, 30), font_scale=0.9, color=(0, 165, 255), thickness=2)
         else:
@@ -937,7 +987,7 @@ def predict_sentence(model_path='models/gesture_model.pkl',
     print("\u2713 Sentence formation mode stopped\n")
 
 
-def predict_stable_sentence(model_path='models/gesture_model.pkl',
+def predict_stable_sentence(model_path=ALPHABET_MODEL_PATH,
                              use_normalized=True,
                              confidence_threshold=0.5,
                              buffer_size=10,
@@ -987,7 +1037,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     feat_window = deque()  # stores (timestamp, feature_array) pairs
 
     print(f"\n{'='*60}")
-    print("Stable Sentence Builder")
+    print("Sentence Builder")
     print(f"{'='*60}")
     print(f"  Buffer size          : {buffer_size} frames")
     print(f"  Stability threshold  : {stability_threshold}/{buffer_size} same predictions")
@@ -1180,7 +1230,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
         cv2.putText(frame, f"FPS:{int(fps)}", (w - 90, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1, cv2.LINE_AA)
 
-        cv2.imshow('ISL Stable Sentence Builder', frame)
+        cv2.imshow('ISL Sentence Builder', frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -1199,7 +1249,7 @@ def predict_stable_sentence(model_path='models/gesture_model.pkl',
     cap.release()
     cv2.destroyAllWindows()
     detector.close()
-    print("\u2713 Stable sentence builder stopped\n")
+    print("\u2713 Sentence builder stopped\n")
 
 
 def main():
@@ -1211,11 +1261,10 @@ def main():
     print("="*60)
 
     print("\nChoose mode:")
-    print("  1. Letters prediction")
-    print("  2. Word formation")
-    print("  3. Sentence formation (recommended)")
-    print("  4. Stable sentence builder")
-    mode = input("Enter mode (1-4, default: 3): ").strip() or "3"
+    print("  1. Letters")
+    print("  2. Words")
+    print("  3. Sentence builder")
+    mode = input("Enter mode (1-3, default: 3): ").strip() or "3"
     
     # Option to use normalized landmarks
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
@@ -1240,14 +1289,8 @@ def main():
         predict_realtime(use_normalized=use_normalized,
                          confidence_threshold=confidence_threshold)
     elif mode == "2":
-        hold_input = input("Enter hold duration in seconds (default: 1.0): ").strip()
-        try:
-            hold_duration = float(hold_input) if hold_input else 1.0
-        except ValueError:
-            hold_duration = 1.0
         predict_words(use_normalized=use_normalized,
-                      confidence_threshold=confidence_threshold,
-                      hold_duration=hold_duration)
+                      confidence_threshold=confidence_threshold)
     elif mode == "3":
         hold_input = input("Enter hold duration in seconds (default: 1.0): ").strip()
         try:
@@ -1265,11 +1308,8 @@ def main():
                          confidence_threshold=confidence_threshold,
                          hold_duration=hold_duration,
                          auto_space_after=auto_space_after)
-    elif mode == "4":
-        predict_stable_sentence(use_normalized=use_normalized,
-                                confidence_threshold=confidence_threshold)
     else:
-        print("Invalid mode. Starting Sentence formation by default.")
+        print("Invalid mode. Starting Sentence builder by default.")
         predict_sentence(use_normalized=use_normalized,
                          confidence_threshold=confidence_threshold,
                          hold_duration=1.0,

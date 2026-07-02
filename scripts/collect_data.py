@@ -9,11 +9,20 @@ import os
 import sys
 import time
 import shutil
+import ctypes
 
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.mediapipe_utils import HandDetector, display_text
+
+
+def _is_space_held():
+    """Return True while the spacebar is physically held down on Windows."""
+    try:
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0x20) & 0x8000)
+    except Exception:
+        return False
 
 
 MIN_BRIGHTNESS = 60.0
@@ -131,7 +140,9 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
         # Flip the frame horizontally for a mirror effect
         frame = cv2.flip(frame, 1)
         
-        # Detect hands
+        raw_frame = frame.copy()
+
+        # Detect hands on display frame
         frame, results = detector.find_hands(frame, draw=True)
         
         # Display information
@@ -148,7 +159,7 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
             frame = display_text(frame, instruction, position=(10, 70), 
                                color=(0, 0, 255), font_scale=0.6)
 
-        quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+        quality_ok, quality_text = _evaluate_frame_quality(raw_frame, results)
         frame = display_text(frame, f"Quality: {quality_text}", position=(10, 110),
                              color=(0, 200, 0) if quality_ok else (0, 0, 255),
                              font_scale=0.5)
@@ -164,11 +175,11 @@ def collect_data(label, num_samples=100, dataset_path='dataset/raw_images'):
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord(' '):  # Space key to capture
-            quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+            quality_ok, quality_text = _evaluate_frame_quality(raw_frame, results)
             if quality_ok:
                 # Save the image
                 img_path = os.path.join(full_dataset_path, f"{label}_{count}.jpg")
-                cv2.imwrite(img_path, frame)
+                cv2.imwrite(img_path, raw_frame)
                 count += 1
                 print(f"Captured: {img_path} ({count - start_index}/{num_samples})")
                 
@@ -254,6 +265,7 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
             break
 
         frame = cv2.flip(frame, 1)
+        raw_frame = frame.copy()
         frame, results = detector.find_hands(frame, draw=True)
         h, w = frame.shape[:2]
 
@@ -269,7 +281,7 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
             frame = display_text(frame, "No hand detected",
                                position=(10, 65), color=(0, 0, 255), font_scale=0.55)
 
-        quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+        quality_ok, quality_text = _evaluate_frame_quality(raw_frame, results)
         frame = display_text(frame, f"Quality: {quality_text}",
                            position=(10, 100),
                            color=(0, 200, 0) if quality_ok else (0, 0, 255),
@@ -285,8 +297,8 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
             print("\nCollection stopped by user.")
             break
 
-        if key == ord(' '):
-            quality_ok, quality_text = _evaluate_frame_quality(frame, results)
+        if key == ord(' ') or _is_space_held():
+            quality_ok, quality_text = _evaluate_frame_quality(raw_frame, results)
             if not quality_ok:
                 print(f"Recording skipped: {quality_text}. Improve the frame before recording.")
                 continue
@@ -306,8 +318,9 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
                     break
 
                 clip_frame = cv2.flip(clip_frame, 1)
+                raw_clip = clip_frame.copy()
                 clip_frame, clip_results = detector.find_hands(clip_frame, draw=True)
-                clip_quality_ok, clip_quality_text = _evaluate_frame_quality(clip_frame, clip_results)
+                clip_quality_ok, clip_quality_text = _evaluate_frame_quality(raw_clip, clip_results)
                 if not clip_quality_ok:
                     bad_frame_count += 1
 
@@ -325,7 +338,7 @@ def collect_video_sequence(label, num_clips=50, clip_frames=30,
                 cv2.waitKey(1)
 
                 img_path = os.path.join(clip_dir, f"frame_{frame_num}.jpg")
-                cv2.imwrite(img_path, clip_frame)
+                cv2.imwrite(img_path, raw_clip)
                 frame_num += 1
 
             if frame_num > 0 and bad_frame_count / frame_num > 0.35:

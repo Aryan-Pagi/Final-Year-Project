@@ -10,7 +10,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts'))
 
 from scripts.collect_data import collect_data, collect_video_sequence
-from scripts.extract_landmarks import extract_landmarks_from_dataset
+from scripts.extract_landmarks import extract_landmarks_from_dataset, extract_sequences_from_dataset
 from scripts.train_model import train_model
 from scripts.realtime_predict import predict_realtime, predict_words, predict_sentence, predict_stable_sentence
 
@@ -31,7 +31,7 @@ def print_menu():
     print("1. Collect Data")
     print("2. Extract Landmarks")
     print("3. Train Model")
-    print("4. Real-time Prediction (Letters)")
+    print("4. Real-time Prediction (Auto static/dynamic)")
     print("5. Real-time Word Formation")
     print("6. Sentence Formation")
     print("7. Stable Sentence Builder (Buffer-based)")
@@ -93,6 +93,13 @@ def extract_landmarks_menu():
     print("\n" + "="*70)
     print("LANDMARK EXTRACTION")
     print("="*70)
+
+    print("\nChoose extraction mode:")
+    print("  1. Static gestures  - A-Z and 0-9")
+    print("  2. Dynamic words    - HELLO, HELP, YES, NO, THANK_YOU")
+    print("  3. Legacy CSV       - existing flat landmark table")
+    mode_choice = input("Extraction mode (1/2/3, default: 1): ").strip()
+    mode = 'csv' if mode_choice == '3' else ('word' if mode_choice == '2' else 'alphabet')
     
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
     use_normalized = normalize_choice != 'n'
@@ -103,7 +110,10 @@ def extract_landmarks_menu():
         print("Using raw landmarks")
     
     print("\nExtracting landmarks from dataset...")
-    extract_landmarks_from_dataset(use_normalized=use_normalized)
+    if mode == 'csv':
+        extract_landmarks_from_dataset(use_normalized=use_normalized)
+    else:
+        extract_sequences_from_dataset(use_normalized=use_normalized, mode=mode)
 
 
 def train_model_menu():
@@ -111,6 +121,12 @@ def train_model_menu():
     print("\n" + "="*70)
     print("MODEL TRAINING")
     print("="*70)
+
+    print("\nChoose training mode:")
+    print("  1. Static gestures  - alphabet_model")
+    print("  2. Dynamic words    - word_model")
+    mode_choice = input("Training mode (1/2, default: 1): ").strip()
+    mode = 'word' if mode_choice == '2' else 'alphabet'
     
     test_size_input = input("\nEnter test set size (0-1, default: 0.2): ").strip()
     
@@ -127,13 +143,13 @@ def train_model_menu():
         test_size = 0.2
     
     print("\nTraining model...")
-    train_model(test_size=test_size)
+    train_model(mode=mode, test_size=test_size)
 
 
 def realtime_prediction_menu():
     """Menu for real-time prediction."""
     print("\n" + "="*70)
-    print("REAL-TIME PREDICTION")
+    print("REAL-TIME PREDICTION (AUTO STATIC/DYNAMIC)")
     print("="*70)
     
     normalize_choice = input("\nUse normalized landmarks? (Y/n): ").strip().lower()
