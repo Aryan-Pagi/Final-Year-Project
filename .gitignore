@@ -28,8 +28,7 @@ Thumbs.db
 desktop.ini
 
 # Project Specific
-dataset/raw_images.zip
-models/*.pkl
+dataset/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
@@ -40,6 +39,3 @@ models/*.pkl
 
 # Temporary files
 *.tmp
-
-dataset/
-models/
