@@ -39,3 +39,6 @@ dataset/
 
 # Temporary files
 *.tmp
+ 
+# Failed debug outputs
+failed_debug/
