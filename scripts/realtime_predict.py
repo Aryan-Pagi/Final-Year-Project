@@ -247,6 +247,19 @@ def _movement_score(previous_landmarks, current_landmarks):
     return float(np.mean(np.abs(current - previous)))
 
 
+def _update_motion_state(current_motion, motion_state, static_streak, dynamic_hold_frames=8):
+    """Keep dynamic gestures on the word model for a few static-looking frames."""
+    if current_motion == 'DYNAMIC':
+        return 'DYNAMIC', 0
+
+    if motion_state == 'DYNAMIC':
+        static_streak += 1
+        if static_streak < dynamic_hold_frames:
+            return 'DYNAMIC', static_streak
+
+    return 'STATIC', 0
+
+
 def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
                     word_model_path=WORD_MODEL_PATH,
                     use_normalized=True,
@@ -287,6 +300,8 @@ def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
     seq_buffer = deque(maxlen=max_seq_frames)
     motion_values = deque(maxlen=max_seq_frames - 1)
     previous_raw_landmarks = None
+    motion_state = 'STATIC'
+    static_streak = 0
 
     print(f"\n{'='*60}")
     print("Starting Real-time Prediction")
@@ -373,7 +388,9 @@ def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
             features = compute_engineered_features(landmarks) if use_engineered_features else landmarks
             seq_buffer.append(np.asarray(features, dtype=np.float32))
 
-            detected_type = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            current_motion = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            motion_state, static_streak = _update_motion_state(current_motion, motion_state, static_streak)
+            detected_type = motion_state
             if detected_type != last_detected_type:
                 prediction_history.clear()
                 last_detected_type = detected_type
@@ -438,6 +455,8 @@ def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
             seq_buffer.clear()
             motion_values.clear()
             previous_raw_landmarks = None
+            motion_state = 'STATIC'
+            static_streak = 0
             last_detected_type = None
         curr_time = time.time()
         fps = get_fps(prev_time, curr_time)
@@ -473,7 +492,7 @@ def predict_realtime(alphabet_model_path=ALPHABET_MODEL_PATH,
     print("✓ Real-time prediction stopped\n")
 
 
-def predict_words(model_path=ALPHABET_MODEL_PATH,
+def predict_words(model_path=WORD_MODEL_PATH,
                   use_normalized=True,
                   confidence_threshold=0.7,
                   hold_duration=1.0):
@@ -747,6 +766,8 @@ def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
     seq_buffer = deque(maxlen=max_seq_frames)
     motion_values = deque(maxlen=max_seq_frames - 1)
     previous_raw_landmarks = None
+    motion_state = 'STATIC'
+    static_streak = 0
 
     print(f"\n{'='*60}")
     print("Starting Sentence Formation Mode")
@@ -807,7 +828,9 @@ def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
             if use_engineered_features:
                 landmarks = compute_engineered_features(landmarks)
 
-            detected_type = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            current_motion = _detect_static_motion(motion_values, movement_threshold, static_ratio_threshold)
+            motion_state, static_streak = _update_motion_state(current_motion, motion_state, static_streak)
+            detected_type = motion_state
             active_model = alphabet_model if detected_type == 'STATIC' else word_model
             active_label_encoder = alphabet_label_encoder if detected_type == 'STATIC' else word_label_encoder
             active_meta = alphabet_meta if detected_type == 'STATIC' else word_meta
@@ -825,6 +848,8 @@ def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
             seq_buffer.clear()
             motion_values.clear()
             previous_raw_landmarks = None
+            motion_state = 'STATIC'
+            static_streak = 0
             word_builder._reset_tracking()
             if word_builder.current_word:
                 if no_hand_since is None:

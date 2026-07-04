@@ -79,6 +79,6 @@ args = parser.parse_args()
 
 if args.mode == "all":
     for key in ("alphabet", "word"):
-        _print_model_info(MODE_PATHS[key])
+        _print_model_info(MODEL_PATHS[key])
 else:
-    _print_model_info(MODE_PATHS[args.mode])
+    _print_model_info(MODEL_PATHS[args.mode])
