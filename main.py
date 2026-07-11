@@ -363,7 +363,6 @@ def main_cli():
         else:
             print("\nError: Invalid choice. Please enter a number between 1 and 9.")
         
-        # Ask if user wants to continue
         continue_choice = input("\nPress Enter to return to main menu (or 'q' to quit): ").strip().lower()
         if continue_choice == 'q':
             print("\n" + "="*70)
@@ -375,7 +374,7 @@ def main_cli():
 def main():
     """
     Main entry point.
-    Launches the Gradio Web UI by default.
+    Launches the Flask Web UI by default.
     Use the --cli flag to run the original command-line interface.
     """
     parser = argparse.ArgumentParser(description="ISL Gesture Recognition System")
@@ -390,20 +389,18 @@ def main():
         main_cli()
     else:
         try:
-            from app import launch as launch_gradio_app
-            launch_gradio_app()
-        except ImportError:
+            from app import launch
+            print("\nRedirecting to Flask Web Interface...")
+            launch()
+        except ImportError as e:
             print("\n" + "="*70)
             print("ERROR: Could not launch the Web UI.")
-            print("Please ensure 'app.py' and 'gradio_backend.py' are present.")
+            print(f"Details: {e}")
+            print("Please ensure 'app.py' and 'flask_backend.py' are present.")
             print("You can run the classic interface with: python main.py --cli")
             print("="*70 + "\n")
         except Exception as e:
-            print(f"\nAn error occurred while launching the Gradio app: {e}")
-
-
-from app import launch
-
+            print(f"\nAn error occurred while launching the web app: {e}")
 
 if __name__ == "__main__":
-    launch()
+    main()
