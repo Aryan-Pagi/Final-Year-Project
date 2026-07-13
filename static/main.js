@@ -5,7 +5,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("btn-stop").addEventListener("click", () => fetch('/stop', { method: 'POST' }));
     document.getElementById("btn-clear").addEventListener("click", () => fetch('/clear', { method: 'POST' }));
 
-    // 2. Status Polling Loop
+    // 2. Status Polling Loop & Live Logs
     const statusIndicator = document.getElementById("status-indicator");
     const predictionText = document.getElementById("prediction-text");
 
@@ -16,6 +16,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 statusIndicator.innerText = data.status_msg;
                 predictionText.value = data.prediction_text;
                 statusIndicator.style.color = data.is_running ? "#38a169" : "#e53e3e";
+                
+                // Process Live Terminal Logs
+                if (data.new_logs && data.new_logs.length > 0) {
+                    data.new_logs.forEach(log => {
+                        logToConsole(log, true); // True flags it as a Terminal/Backend log
+                    });
+                }
             })
             .catch(err => console.error("Polling error:", err));
     }, 500);
@@ -27,7 +34,6 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             const unifiedList = document.getElementById('unified-dataset-list');
             
-            // Combine both static and dynamic lists into a single consolidated view
             const combined = [...data.static, ...data.dynamic];
             
             unifiedList.innerHTML = combined.length ? 
@@ -67,19 +73,28 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // 6. Admin API Calls & Logging
+    // 6. Formatted UI Logger
     const consoleOutput = document.getElementById('consoleOutput');
-    function logToConsole(msg) {
+    function logToConsole(msg, isBackend = false) {
         const line = document.createElement('div');
-        line.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        const time = new Date().toLocaleTimeString();
+        
+        // Color-code the source: Orange/Gray for Terminal prints, Blue for Frontend requests
+        const source = isBackend ? '<span style="color:#a0aec0; font-weight:bold;">[Terminal]</span>' : '<span style="color:#3182ce; font-weight:bold;">[Frontend]</span>';
+        
+        // Safe escape to prevent raw data from breaking the HTML wrapper
+        const safeMsg = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        
+        line.innerHTML = `<span style="color:#718096">[${time}]</span> ${source} ${safeMsg}`;
         consoleOutput.appendChild(line);
         consoleOutput.scrollTop = consoleOutput.scrollHeight;
     }
 
     document.getElementById('clearLogsBtn').addEventListener('click', () => {
-        consoleOutput.innerHTML = '<div>[System] Logs cleared.</div>';
+        consoleOutput.innerHTML = '<div><span style="color:#718096">[System]</span> Logs cleared.</div>';
     });
 
+    // 7. API Event Listeners
     document.getElementById('startCaptureBtn').addEventListener('click', async () => {
         const gestureName = document.getElementById('gestureName').value;
         const captureType = document.querySelector('input[name="captureType"]:checked').value;
@@ -99,7 +114,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.getElementById('extractLandmarksBtn').addEventListener('click', async () => {
         const useNormalized = document.getElementById('useNormalizedCheckbox').checked;
-        logToConsole("Extracting landmarks... This may take a moment.");
+        logToConsole("Requesting landmark extraction. Monitor terminal stream below...");
         const res = await fetch('/api/extract', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -111,11 +126,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.getElementById('trainModelBtn').addEventListener('click', async () => {
         const testSize = document.getElementById('testSize').value;
-        logToConsole(`Training model (Test split: ${testSize})...`);
+        logToConsole(`Requesting model training (Test split: ${testSize})...`);
         const res = await fetch('/api/train', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ testSize })
+        });
+        const data = await res.json();
+        logToConsole(data.message);
+    });
+
+    // 8. Settings & Model Switching
+    document.getElementById('modelModeSelect').addEventListener('change', async (e) => {
+        const mode = e.target.value;
+        const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode })
+        });
+        const data = await res.json();
+        logToConsole(data.message);
+    });
+
+    document.getElementById('reloadModelsBtn').addEventListener('click', async () => {
+        logToConsole("Requesting hot-reload of models...");
+        const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reload: true })
         });
         const data = await res.json();
         logToConsole(data.message);

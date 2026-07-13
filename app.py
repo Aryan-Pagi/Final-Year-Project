@@ -1,5 +1,39 @@
 import os
+import sys
 from flask import Flask, render_template, Response, jsonify, request
+
+# ==========================================
+# TERMINAL LOG INTERCEPTOR
+# ==========================================
+class AppLogger:
+    def __init__(self):
+        self.logs = []
+        self.terminal_out = sys.__stdout__
+        self.terminal_err = sys.__stderr__
+
+    def write(self, message):
+        # Always print to the real terminal
+        self.terminal_out.write(message)
+        self.terminal_out.flush()
+        
+        msg = message.strip()
+        if msg:
+            # Filter out the noisy repeating Flask background requests
+            if "HTTP/1.1" in msg and any(ep in msg for ep in ["/status", "/video_feed", "/api/dataset_info", "/static"]):
+                return
+            self.logs.append(msg)
+
+    def flush(self):
+        self.terminal_out.flush()
+        self.terminal_err.flush()
+
+# Override stdout and stderr to capture print() and tracebacks
+app_logger = AppLogger()
+sys.stdout = app_logger
+sys.stderr = app_logger
+
+# ==========================================
+
 from flask_backend import FlaskISLRuntime
 
 # Import original scripts for admin panel
@@ -36,10 +70,15 @@ def clear():
 
 @app.route('/status', methods=['GET'])
 def status():
+    # Grab the terminal logs since the last poll, then clear the queue
+    logs_to_send = list(app_logger.logs)
+    app_logger.logs.clear()
+    
     return jsonify({
         "status_msg": runtime.status_msg,
         "prediction_text": runtime.current_prediction_text,
-        "is_running": runtime.is_running
+        "is_running": runtime.is_running,
+        "new_logs": logs_to_send
     })
 
 # --- DATASET FOLDER ROUTE ---
@@ -71,7 +110,7 @@ def api_collect():
             collect_video_sequence(data.get('gestureName').upper(), num_clips=int(data.get('numSamples')), clip_frames=30)
         else:
             collect_data(data.get('gestureName').upper(), int(data.get('numSamples')))
-        return jsonify({"status": "success", "message": f"Collected data for {data.get('gestureName')}"})
+        return jsonify({"status": "success", "message": f"Finished collection process for {data.get('gestureName')}"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -80,7 +119,7 @@ def api_extract():
     try:
         extract_landmarks_from_dataset(use_normalized=request.json.get('useNormalized'))
         extract_sequences_from_dataset(use_normalized=request.json.get('useNormalized'), mode='word')
-        return jsonify({"status": "success", "message": "Landmarks extracted."})
+        return jsonify({"status": "success", "message": "Landmarks extracted successfully."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -88,7 +127,21 @@ def api_extract():
 def api_train():
     try:
         train_model(mode='word', test_size=float(request.json.get('testSize')))
-        return jsonify({"status": "success", "message": "Model trained."})
+        return jsonify({"status": "success", "message": "Model trained successfully."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings():
+    data = request.json
+    try:
+        if 'mode' in data:
+            runtime.inference_mode = data['mode']
+            return jsonify({"status": "success", "message": f"Inference mode forced to: {data['mode']}"})
+        if 'reload' in data and data['reload']:
+            msg = runtime.reload_models()
+            return jsonify({"status": "success", "message": msg})
+        return jsonify({"status": "error", "message": "Invalid request"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
