@@ -1,0 +1,326 @@
+* {
+    box-sizing: border-box;
+}
+
+body.shell-body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f7fafc;
+    margin: 0;
+    padding: 24px;
+    color: #2d3748;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+}
+
+.header {
+    background: #ffffff;
+    padding: 18px 24px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.header h1 {
+    margin: 0 0 6px 0;
+    color: #3182ce;
+    font-size: 1.4rem;
+    letter-spacing: 0.5px;
+}
+
+.header p {
+    margin: 0;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #4a5568;
+}
+
+/* ─── MAIN APP LAYOUT ─────────────────────────────────────────── */
+.container {
+    display: flex;
+    gap: 20px;
+    height: calc(100vh - 130px);
+    width: 100%;
+}
+
+.left-panel {
+    flex: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 100%;
+}
+
+.right-panel {
+    flex: 1;
+    background: #ffffff;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    height: 100%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.right-panel h2 {
+    margin-top: 0;
+    font-size: 1.15rem;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 8px;
+    color: #2d3748;
+}
+
+/* ─── VIDEO & PREDICTION ──────────────────────────────────────── */
+.video-container {
+    flex: 0 0 62%;
+    background: #000000;
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.video-container img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.output-container {
+    flex: 1;
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 16px 20px;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.output-container h3 {
+    margin: 0 0 8px 0;
+    font-size: 0.9rem;
+    color: #718096;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.output-container textarea {
+    width: 100%;
+    height: calc(100% - 24px);
+    background: #f8fafc;
+    color: #38a169;
+    font-size: 1.8rem;
+    font-weight: 700;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px;
+    resize: none;
+    outline: none;
+}
+
+/* ─── BUTTON STYLING (BETTER UI) ──────────────────────────────── */
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.btn {
+    padding: 12px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    width: 100%;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.btn.primary {
+    background: #3182ce;
+    color: white;
+}
+.btn.primary:hover {
+    background: #2b6cb0;
+}
+
+.btn.secondary {
+    background: #e2e8f0;
+    color: #4a5568;
+}
+.btn.secondary:hover {
+    background: #cbd5e0;
+}
+
+.btn.danger {
+    background: #e53e3e;
+    color: white;
+}
+.btn.danger:hover {
+    background: #c53030;
+}
+
+.btn.admin-btn {
+    background: #dd6b20;
+    color: #fff;
+    margin-top: auto;
+}
+.btn.admin-btn:hover {
+    background: #c05621;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #e2e8f0;
+    margin: 4px 0;
+}
+
+/* ─── SLIDING ADMIN DRAWER & TABS ─────────────────────────────── */
+.admin-drawer {
+    position: fixed;
+    top: 0;
+    right: -520px;
+    width: 480px;
+    height: 100vh;
+    background: #ffffff;
+    box-shadow: -8px 0 30px rgba(0, 0, 0, 0.15);
+    transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #e2e8f0;
+}
+.admin-drawer.open {
+    right: 0;
+}
+
+.admin-header {
+    padding: 20px 24px;
+    background: #f7fafc;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #e2e8f0;
+}
+.admin-header h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: #2d3748;
+}
+
+.admin-content {
+    padding: 20px 24px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.admin-backdrop {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 999;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+.admin-backdrop.open {
+    opacity: 1; pointer-events: all;
+}
+
+.tab-navigation {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 10px;
+}
+.tab-button {
+    background: transparent;
+    border: none;
+    color: #a0aec0;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 4px 0;
+    transition: color 0.2s;
+}
+.tab-button:hover {
+    color: #4a5568;
+}
+.tab-button.active {
+    color: #3182ce;
+    border-bottom: 2px solid #3182ce;
+}
+
+.tab-content {
+    display: none;
+}
+.tab-content.active {
+    display: block;
+}
+
+.admin-content label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+    color: #4a5568;
+}
+.admin-content input[type="text"],
+.admin-content input[type="number"] {
+    background: #f8fafc;
+    border: 1px solid #cbd5e0;
+    border-radius: 6px;
+    color: #2d3748;
+    padding: 10px;
+    width: 100%;
+    margin-bottom: 14px;
+    outline: none;
+}
+.admin-content input:focus {
+    border-color: #3182ce;
+}
+
+/* Unified Dataset Badges Grid */
+.dataset-col {
+    background: #f8fafc;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+.dataset-col h4 {
+    margin: 0 0 8px 0;
+    color: #718096;
+    font-size: 0.8rem;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 4px;
+    text-transform: uppercase;
+}
+.badge-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.badge-list li {
+    background: #3182ce;
+    color: #fff;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.badge-list li.empty {
+    background: #e2e8f0;
+    color: #718096;
+}

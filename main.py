@@ -5,6 +5,7 @@ This script provides a simple menu interface to access all functionalities.
 
 import os
 import sys
+import argparse
 
 # Add scripts directory to path
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts'))
@@ -321,8 +322,8 @@ def quick_setup():
         collect_data_menu()
 
 
-def main():
-    """Main function to run the application."""
+def main_cli():
+    """Main function to run the command-line interface."""
     print_banner()
     
     while True:
@@ -362,7 +363,6 @@ def main():
         else:
             print("\nError: Invalid choice. Please enter a number between 1 and 9.")
         
-        # Ask if user wants to continue
         continue_choice = input("\nPress Enter to return to main menu (or 'q' to quit): ").strip().lower()
         if continue_choice == 'q':
             print("\n" + "="*70)
@@ -371,10 +371,36 @@ def main():
             sys.exit(0)
 
 
+def main():
+    """
+    Main entry point.
+    Launches the Flask Web UI by default.
+    Use the --cli flag to run the original command-line interface.
+    """
+    parser = argparse.ArgumentParser(description="ISL Gesture Recognition System")
+    parser.add_argument(
+        '--cli',
+        action='store_true',
+        help='Run the original command-line interface instead of the Web UI.'
+    )
+    args = parser.parse_args()
+
+    if args.cli:
+        main_cli()
+    else:
+        try:
+            from app import launch
+            print("\nRedirecting to Flask Web Interface...")
+            launch()
+        except ImportError as e:
+            print("\n" + "="*70)
+            print("ERROR: Could not launch the Web UI.")
+            print(f"Details: {e}")
+            print("Please ensure 'app.py' and 'flask_backend.py' are present.")
+            print("You can run the classic interface with: python main.py --cli")
+            print("="*70 + "\n")
+        except Exception as e:
+            print(f"\nAn error occurred while launching the web app: {e}")
+
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nProgram interrupted by user.")
-        print("Thank you for using ISL Gesture Recognition System!\n")
-        sys.exit(0)
+    main()

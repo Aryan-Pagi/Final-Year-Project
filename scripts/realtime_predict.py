@@ -842,7 +842,12 @@ def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
             proba = active_model.predict(seq[np.newaxis], verbose=0)[0]
             pred_idx = int(np.argmax(proba))
             confidence = float(proba[pred_idx])
-            predicted_label = (active_meta.get('index_to_class') or list(active_label_encoder.classes_))[pred_idx]
+            class_names = active_meta.get("index_to_class")
+
+            if class_names is None:
+                    class_names = list(active_label_encoder.classes_)
+
+            predicted_label = class_names[pred_idx]
         else:
             # Hand absent
             seq_buffer.clear()
@@ -985,14 +990,13 @@ def predict_sentence(alphabet_model_path=ALPHABET_MODEL_PATH,
                 sentence_history.append(sentence)
                 print(f"Sentence: {sentence}")
             word_builder.clear()
-            feat_window.clear()
+            seq_buffer.clear()
         elif key == ord(' '):
             word_builder.add_space()
         elif key == 8:  # Backspace
             word_builder.backspace()
         elif key == ord('c'):
             word_builder.clear()
-            feat_window.clear()
 
     # Commit any unsaved text on exit
     final_text = word_builder.get_display_text().strip()
@@ -1051,15 +1055,22 @@ def predict_stable_sentence(model_path=ALPHABET_MODEL_PATH,
     print("Loading Model...")
     print(f"{'='*60}\n")
 
-    model, label_encoder, uses_engineered, num_features = load_model(model_path)
+    model, label_encoder, uses_engineered, num_features, model_meta = load_model(model_path)
     if model is None or label_encoder is None:
         return
 
     from utils.mediapipe_utils import get_engineered_feature_names
     base_feat_count = len(get_engineered_feature_names())
-    unified_mode = (num_features is not None and num_features > base_feat_count)
+    is_bilstm = model_meta.get('model_type') == 'BiLSTM'
+    max_seq_frames = int(model_meta.get('max_seq_frames', 30))
+    feat_size = int(model_meta.get('feature_size', base_feat_count))
+    class_names = model_meta.get('index_to_class') or list(getattr(label_encoder, 'classes_', []))
+    unified_mode = (not is_bilstm
+                    and num_features is not None
+                    and num_features > base_feat_count)
     TIME_WINDOW = 1.5  # seconds — matches training clip duration
     feat_window = deque()  # stores (timestamp, feature_array) pairs
+    seq_buffer = deque(maxlen=max_seq_frames)
 
     print(f"\n{'='*60}")
     print("Sentence Builder")
@@ -1121,7 +1132,9 @@ def predict_stable_sentence(model_path=ALPHABET_MODEL_PATH,
             # ── Step 2: feature engineering + unified mode ────────────────────
             if uses_engineered:
                 landmarks = compute_engineered_features(landmarks)
-            if unified_mode:
+            if is_bilstm:
+                seq_buffer.append(np.asarray(landmarks, dtype=np.float32))
+            elif unified_mode:
                 feat_window.append((now, landmarks))
                 while feat_window and (now - feat_window[0][0]) > TIME_WINDOW:
                     feat_window.popleft()
@@ -1130,10 +1143,15 @@ def predict_stable_sentence(model_path=ALPHABET_MODEL_PATH,
 
             # ── Step 3: model prediction ──────────────────────────────────────
             try:
-                pred_enc = model.predict(landmarks.reshape(1, -1))[0]
-                prob = model.predict_proba(landmarks.reshape(1, -1))[0]
-                confidence = prob[pred_enc]
-                predicted_label = label_encoder.inverse_transform([pred_enc])[0]
+                if is_bilstm:
+                    pred_idx, confidence = _predict_sequence(model, seq_buffer, feat_size, max_seq_frames)
+                    if class_names and 0 <= pred_idx < len(class_names):
+                        predicted_label = str(class_names[pred_idx])
+                else:
+                    pred_enc = model.predict(landmarks.reshape(1, -1))[0]
+                    prob = model.predict_proba(landmarks.reshape(1, -1))[0]
+                    confidence = prob[pred_enc]
+                    predicted_label = label_encoder.inverse_transform([pred_enc])[0]
             except Exception:
                 predicted_label = None
 
@@ -1144,6 +1162,7 @@ def predict_stable_sentence(model_path=ALPHABET_MODEL_PATH,
         else:
             # No hand detected — clear feature window but keep pred buffer
             feat_window.clear()
+            seq_buffer.clear()
 
         # ── Step 5: check buffer for stability ───────────────────────────────
         #  Confirmed only when buffer is full and one label dominates

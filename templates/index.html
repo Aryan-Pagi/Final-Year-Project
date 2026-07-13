@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISL Translator Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=5.0">
+</head>
+<body class="shell-body">
+    
+    <div class="header">
+        <h1>ISL TRANSLATOR | ACTIVE ONLINE</h1>
+        <p>System Status: <span id="status-indicator">🔴 STOPPED</span></p>
+    </div>
+
+    <div class="container">
+        <div class="left-panel">
+            <div class="video-container">
+                <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Live Camera Feed">
+            </div>
+            <div class="output-container">
+                <h3>Generated Translation</h3>
+                <textarea id="prediction-text" readonly rows="2" placeholder="Waiting for input..."></textarea>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <h2>Controls</h2>
+            <div class="control-group">
+                <button id="btn-start" class="btn primary">START INFERENCE</button>
+                <button id="btn-stop" class="btn secondary">STOP INFERENCE</button>
+            </div>
+            <hr>
+            <div class="control-group">
+                <button id="btn-clear" class="btn danger">CLEAR TEXT</button>
+            </div>
+            <hr>
+            <div class="control-group">
+                <button id="toggleAdminBtn" class="btn admin-btn">⚙️ OPEN ADMIN PANEL</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="admin-backdrop" id="adminBackdrop"></div>
+    <section class="admin-drawer" id="adminView">
+        <div class="admin-header">
+            <h2>System Admin Panel</h2>
+            <button class="btn secondary" id="closeAdminBtn" style="width: auto; padding: 6px 12px;">Close</button>
+        </div>
+
+        <div class="admin-content">
+            <div class="tab-navigation">
+                <button class="tab-button active" data-tab="data-collection">Data Collection</button>
+                <button class="tab-button" data-tab="extraction">Extraction</button>
+                <button class="tab-button" data-tab="training">Training</button>
+                <button class="tab-button" data-tab="console">Console</button>
+            </div>
+
+            <div class="tab-content active" id="tab-data-collection">
+                <h3>Capture New Gesture</h3>
+                <label>Gesture Name:</label>
+                <input type="text" id="gestureName" placeholder="e.g. HELLO">
+                
+                <label>Capture Type:</label>
+                <div style="margin-bottom:14px; font-size: 0.9rem;">
+                    <input type="radio" name="captureType" value="images" checked> Static Images &nbsp;&nbsp;
+                    <input type="radio" name="captureType" value="video"> Video Clips
+                </div>
+
+                <label>Samples/Clips Count:</label>
+                <input type="number" id="numSamples" value="100">
+                
+                <button id="startCaptureBtn" class="btn primary">Start Capture</button>
+                
+                <hr style="margin: 22px 0;">
+                <h3 style="margin-bottom: 8px;">Existing Dataset Folders</h3>
+                <div class="dataset-col">
+                    <h4>Collected Gestures</h4>
+                    <ul id="unified-dataset-list" class="badge-list"><li class="empty">Loading...</li></ul>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-extraction">
+                <h3>Dataset Preparation</h3>
+                <div style="margin-bottom:15px; font-size: 0.9rem;">
+                    <input type="checkbox" id="useNormalizedCheckbox" checked> Use normalized landmarks (Recommended)
+                </div>
+                <button id="extractLandmarksBtn" class="btn primary">Extract Landmarks</button>
+            </div>
+
+            <div class="tab-content" id="tab-training">
+                <h3>Train Model</h3>
+                <label>Test Set Size (0.1 to 0.5):</label>
+                <input type="number" id="testSize" step="0.05" value="0.2">
+                <button id="trainModelBtn" class="btn primary">Train Model</button>
+            </div>
+
+            <div class="tab-content" id="tab-console">
+                <h3>System Logs</h3>
+                <button id="clearLogsBtn" class="btn secondary" style="width: auto; padding: 6px 12px; margin-bottom:10px;">Clear Logs</button>
+                <div id="consoleOutput" style="background:#f8f9fa; color:#2d3748; padding:10px; height:260px; overflow-y:auto; font-family:monospace; font-size:0.8rem; border-radius:5px; border: 1px solid #cbd5e0;">
+                    <div>[System] Dashboard initialized.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script src="{{ url_for('static', filename='main.js') }}?v=5.0"></script>
+</body>
+</html>
