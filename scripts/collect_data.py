@@ -14,7 +14,7 @@ import ctypes
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import HandDetector, display_text
+from core_utils.mediapipe_utils import HandDetector, display_text
 
 
 def _is_space_held():

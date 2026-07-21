@@ -28,6 +28,8 @@ Thumbs.db
 desktop.ini
 
 # Project Specific
+dataset/raw_images.zip
+models/*.pkl
 dataset/
 
 # Jupyter Notebooks
@@ -39,6 +41,3 @@ dataset/
 
 # Temporary files
 *.tmp
- 
-# Failed debug outputs
-failed_debug/

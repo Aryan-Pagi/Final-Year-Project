@@ -22,10 +22,10 @@ from tensorflow.keras.layers import Bidirectional, LSTM, Dense, Dropout, Masking
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 from tensorflow.keras.optimizers import Adam
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path AT THE FRONT (index 0) to avoid 'utils' naming conflicts
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.logger import logger
+from core_utils.logger import logger
 
 MAX_SEQ_FRAMES = 30
 STATIC_LABELS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")

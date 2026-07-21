@@ -22,9 +22,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_engineered_features
-from utils.word_builder import WordBuilder, is_word_label
-from utils.logger import logger
+from core_utils.mediapipe_utils import HandDetector, display_text, get_fps, compute_engineered_features
+from core_utils.word_builder import WordBuilder, is_word_label
+from core_utils.logger import logger
 
 STATIC_LABELS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 ALPHABET_MODEL_PATH = 'models/alphabet_model.pkl'

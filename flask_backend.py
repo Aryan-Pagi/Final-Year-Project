@@ -12,8 +12,8 @@ from scripts.realtime_predict import (
     _update_motion_state, normalize_sentence_text,
     ALPHABET_MODEL_PATH, WORD_MODEL_PATH
 )
-from utils.mediapipe_utils import HandDetector, compute_engineered_features, display_text
-from utils.word_builder import WordBuilder, is_word_label
+from core_utils.mediapipe_utils import HandDetector, compute_engineered_features, display_text
+from core_utils.word_builder import WordBuilder, is_word_label
 
 class FlaskISLRuntime:
     def __init__(self):

@@ -7,8 +7,12 @@ import os
 import sys
 import argparse
 
+# Force the project root directory to be the absolute first place Python looks
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_ROOT)
+
 # Add scripts directory to path
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts'))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'scripts'))
 
 from scripts.collect_data import collect_data, collect_video_sequence
 from scripts.extract_landmarks import extract_landmarks_from_dataset, extract_sequences_from_dataset

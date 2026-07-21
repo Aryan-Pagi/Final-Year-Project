@@ -18,7 +18,7 @@ from tqdm import tqdm
 # Add parent directory to path to import utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.mediapipe_utils import HandDetector, compute_engineered_features, get_engineered_feature_names
+from core_utils.mediapipe_utils import HandDetector, compute_engineered_features, get_engineered_feature_names
 
 
 # Number of base engineered features per single frame
