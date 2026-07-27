@@ -52,21 +52,78 @@ def _rewrite_common_phrases(text):
 
     # Longer patterns first to avoid partial replacement conflicts.
     rules = [
-        (("thank", "you", "you", "welcome"), ["thank", "you", "you", "are", "welcome"]),
+         # Greetings
         (("hello", "how", "you"), ["hello", "how", "are", "you"]),
-        (("what", "your", "name"), ["what", "is", "your", "name"]),
+        (("how", "you"), ["how", "are", "you"]),
+        (("good", "morning"), ["good", "morning"]),
+        (("good", "afternoon"), ["good", "afternoon"]),
+        (("good", "night"), ["good", "night"]),
+
+        # Introduction
+        (("what", "name"), ["what", "is", "your", "name"]),
         (("what", "you", "name"), ["what", "is", "your", "name"]),
         (("my", "name"), ["my", "name", "is"]),
-        (("how", "you", "doing"), ["how", "are", "you"]),
+
+        # Thank You
+        (("thank", "you"), ["thank", "you"]),
+        (("thank", "you", "you", "welcome"), ["thank", "you", "you", "are", "welcome"]),
         (("you", "welcome"), ["you", "are", "welcome"]),
-        (("please", "help"), ["please", "help", "me"]),
-        (("where", "bathroom"), ["where", "is", "the", "bathroom"]),
-        (("what", "time"), ["what", "time", "is", "it"]),
-        (("i", "am", "help"), ["i", "need", "help"]),
-        (("i", "help"), ["i", "need", "help"]),
-        (("how", "you"), ["how", "are", "you"]),
+
+        # Apology
+        (("sorry",), ["i", "am", "sorry"]),
         (("i", "sorry"), ["i", "am", "sorry"]),
-        (("i", "thank", "you"), ["thank", "you"]),
+
+        # Help / Emergency
+        (("help",), ["help", "me"]),
+        (("please", "help"), ["please", "help", "me"]),
+        (("help", "hospital"), ["take", "me", "to", "the", "hospital"]),
+        (("help", "police"), ["call", "the", "police"]),
+        (("accident", "help"), ["there", "has", "been", "an", "accident", "help", "me"]),
+        (("accident", "hospital"), ["take", "me", "to", "the", "hospital"]),
+        (("accident", "police"), ["call", "the", "police"]),
+
+        # Health
+        (("fever",), ["i", "have", "fever"]),
+        (("hot",), ["it", "is", "hot"]),
+        (("fine",), ["i", "am", "fine"]),
+
+        # Questions
+        (("where", "washroom"), ["where", "is", "the", "washroom"]),
+        (("what", "time"), ["what", "time", "is", "it"]),
+        (("where", "hospital"), ["where", "is", "the", "hospital"]),
+        (("where", "police"), ["where", "is", "the", "police", "station"]),
+        (("where", "water"), ["where", "can", "i", "get", "water"]),
+
+        # Food & Water
+        (("food",), ["i", "need", "food"]),
+        (("water",), ["i", "need", "water"]),
+        (("give", "water"), ["please", "give", "me", "water"]),
+        (("give", "food"), ["please", "give", "me", "food"]),
+
+        # Phone
+        (("phone",), ["i", "need", "a", "phone"]),
+        (("give", "phone"), ["please", "give", "me", "the", "phone"]),
+
+        # Commands
+        (("stop",), ["stop"]),
+        (("wait",), ["please", "wait"]),
+        (("sit",), ["please", "sit"]),
+        (("sleep",), ["go", "to", "sleep"]),
+        (("open",), ["please", "open"]),
+
+        # Responses
+        (("yes",), ["yes"]),
+        (("no",), ["no"]),
+        (("good",), ["good"]),
+        (("problem",), ["there", "is", "a", "problem"]),
+        (("no", "problem"), ["no", "problem"]),
+        (("know",), ["i", "know"]),
+        (("quiet",), ["please", "keep", "quiet"]),
+
+        # Time of day
+        (("morning",), ["good", "morning"]),
+        (("afternoon",), ["good", "afternoon"]),
+        (("night",), ["good", "night"]),
     ]
 
     i = 0

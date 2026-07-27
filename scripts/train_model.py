@@ -5,7 +5,9 @@ This script now supports two independent training modes:
 - alphabet: static gestures (A-Z and 0-9)
 - word: dynamic word gestures
 """
+from turtle import mode
 
+import matplotlib.pyplot as plt
 import argparse
 import os
 import sys
@@ -256,6 +258,44 @@ def train_model(mode='alphabet',
         callbacks=callbacks,
         verbose=1,
     )
+     
+    # ======================================================
+# Save Training Accuracy Graph
+# ======================================================
+
+    graph_dir = os.path.join(script_dir, "results")
+    os.makedirs(graph_dir, exist_ok=True)
+
+    plt.figure(figsize=(8,5))
+    plt.plot(history.history['accuracy'], linewidth=2, label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], linewidth=2, label='Validation Accuracy')
+    plt.title('Training vs Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.grid(True)
+    plt.legend()
+
+    plt.savefig(os.path.join(graph_dir, f"{mode}_accuracy.png"), dpi=300)
+    plt.close()
+
+
+# ======================================================
+# Save Training Loss Graph
+# ======================================================
+
+    plt.figure(figsize=(8,5))
+    plt.plot(history.history['loss'], linewidth=2, label='Training Loss')
+    plt.plot(history.history['val_loss'], linewidth=2, label='Validation Loss')
+    plt.title('Training vs Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.grid(True)
+    plt.legend()
+
+    plt.savefig(os.path.join(graph_dir, f"{mode}_loss.png"), dpi=300)
+    plt.close()
+
+    print(f"\nGraphs saved in: {graph_dir}")
 
     best_val_acc = max(history.history.get('val_accuracy', [0]))
     print(f"\n✓ Best validation accuracy: {best_val_acc:.2%}")
@@ -285,7 +325,43 @@ def train_model(mode='alphabet',
     print("=" * 60)
     cm = confusion_matrix(y_test, y_pred, labels=np.arange(num_classes))
     print(cm)
+    
+    plt.figure(figsize=(12,10))
 
+    plt.figure(figsize=(12,10))
+
+    plt.imshow(cm, cmap="Blues")
+    plt.title("Confusion Matrix")
+    plt.colorbar()
+
+    tick_marks = np.arange(num_classes)
+    plt.xticks(tick_marks, label_encoder.classes_, rotation=90)
+    plt.yticks(tick_marks, label_encoder.classes_)
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(
+                j,
+                i,
+                str(cm[i, j]),
+                ha="center",
+                va="center",
+                fontsize=7,
+                color="black"
+            )
+
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(graph_dir, f"{mode}_confusion_matrix.png"),
+        dpi=300
+    )
+
+    plt.close()
+    
     cm_off = cm.copy()
     np.fill_diagonal(cm_off, 0)
     if cm_off.max() > 0:
